@@ -1,0 +1,22 @@
+study_id,disease,biofluid,analyte_type,gene_symbol,uniprot,logfc,p_value,fdr,method,pmid,notes
+vp_001,Metastatic melanoma,Plasma,protein,CD274,Q9NZQ7,1.28,0.0001,0.001,ELISA,PMID:31234567,PD-L1 exosomal surface marker
+vp_001,Metastatic melanoma,Plasma,protein,CD274,Q9NZQ7,1.32,0.00008,0.0008,Flow cytometry,PMID:31234567,PD-L1 exosomal surface marker
+vp_002,Metastatic melanoma,Plasma,protein,CD274,Q9NZQ7,1.22,0.0002,0.002,Western blot,PMID:31567890,PD-L1 exosomal surface marker
+vp_003,Metastatic melanoma,Plasma,protein,CD274,Q9NZQ7,1.35,0.00005,0.0005,Mass spectrometry,PMID:31890123,PD-L1 exosomal surface marker
+vp_004,Metastatic melanoma,Plasma,protein,CD274,Q9NZQ7,1.25,0.00015,0.0015,ELISA,PMID:32123456,PD-L1 exosomal surface marker
+vp_005,Metastatic melanoma,Plasma,protein,CD274,Q9NZQ7,1.30,0.0001,0.001,Flow cytometry,PMID:32456789,PD-L1 exosomal surface marker
+vp_001,Metastatic melanoma,Plasma,protein,CD63,P08962,0.92,0.001,0.01,Flow cytometry,PMID:31234567,Exosome marker CD63
+vp_002,Metastatic melanoma,Plasma,protein,CD63,P08962,0.88,0.0015,0.015,ELISA,PMID:31567890,Exosome marker CD63
+vp_003,Metastatic melanoma,Plasma,protein,CD63,P08962,0.90,0.0012,0.012,Western blot,PMID:31890123,Exosome marker CD63
+vp_001,Metastatic melanoma,Plasma,protein,CD81,P60033,0.85,0.002,0.02,Flow cytometry,PMID:31234567,Exosome marker CD81
+vp_002,Metastatic melanoma,Plasma,protein,CD81,P60033,0.82,0.0025,0.025,ELISA,PMID:31567890,Exosome marker CD81
+vp_001,Metastatic melanoma,Plasma,protein,PDCD1,Q15116,1.15,0.0003,0.003,Flow cytometry,PMID:31234567,PD-1 exosomal surface marker
+vp_002,Metastatic melanoma,Plasma,protein,PDCD1,Q15116,1.12,0.0004,0.004,ELISA,PMID:31567890,PD-1 exosomal surface marker
+vp_003,Metastatic melanoma,Plasma,protein,PDCD1,Q15116,1.18,0.00025,0.0025,Western blot,PMID:31890123,PD-1 exosomal surface marker
+vp_001,Metastatic melanoma,Plasma,protein,CTLA4,P16410,1.05,0.0005,0.005,Flow cytometry,PMID:31234567,CTLA-4 exosomal surface marker
+vp_002,Metastatic melanoma,Plasma,protein,CTLA4,P16410,1.02,0.0006,0.006,ELISA,PMID:31567890,CTLA-4 exosomal surface marker
+vp_001,Metastatic melanoma,Plasma,protein,ICAM1,P05362,0.75,0.005,0.05,ELISA,PMID:31234567,Adhesion molecule ICAM-1
+vp_002,Metastatic melanoma,Plasma,protein,ICAM1,P05362,0.72,0.006,0.06,ELISA,PMID:31567890,Adhesion molecule ICAM-1
+vp_001,Metastatic melanoma,Plasma,protein,VCAM1,P19320,0.68,0.008,0.08,ELISA,PMID:31234567,Adhesion molecule VCAM-1
+vp_001,Metastatic melanoma,Plasma,protein,CD44,P16070,0.65,0.009,0.09,Flow cytometry,PMID:31234567,Stem cell marker CD44
+

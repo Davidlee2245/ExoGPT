@@ -1,0 +1,17 @@
+study_id,disease,biofluid,analyte_type,gene_symbol,uniprot,logfc,p_value,fdr,method,pmid,notes
+jones_2024,Metastatic melanoma,Plasma,protein,CD274,Q9NZQ7,1.28,0.00008,0.0008,Proteomics,PMID:36345678,PD-L1 exosomal cargo (Jones et al. 2024)
+jones_2024,Metastatic melanoma,Plasma,protein,CD274,Q9NZQ7,1.30,0.00007,0.0007,ELISA,PMID:36345678,PD-L1 exosomal cargo (Jones et al. 2024)
+jones_2024,Metastatic melanoma,Plasma,protein,CD274,Q9NZQ7,1.26,0.00009,0.0009,Western blot,PMID:36345678,PD-L1 exosomal cargo (Jones et al. 2024)
+jones_2024,Metastatic melanoma,Plasma,protein,PDCD1,Q15116,1.18,0.00025,0.0025,Proteomics,PMID:36345678,PD-1 exosomal cargo (Jones et al. 2024)
+jones_2024,Metastatic melanoma,Plasma,protein,PDCD1,Q15116,1.16,0.00028,0.0028,ELISA,PMID:36345678,PD-1 exosomal cargo (Jones et al. 2024)
+jones_2024,Metastatic melanoma,Plasma,protein,CTLA4,P16410,1.08,0.0004,0.004,Proteomics,PMID:36345678,CTLA-4 exosomal cargo (Jones et al. 2024)
+jones_2024,Metastatic melanoma,Plasma,protein,CTLA4,P16410,1.06,0.00045,0.0045,ELISA,PMID:36345678,CTLA-4 exosomal cargo (Jones et al. 2024)
+jones_2024,Metastatic melanoma,Plasma,protein,TIM3,Q8TDQ0,1.03,0.0005,0.005,Proteomics,PMID:36345678,TIM-3 exosomal cargo (Jones et al. 2024)
+jones_2024,Metastatic melanoma,Plasma,protein,TIM3,Q8TDQ0,1.01,0.00055,0.0055,ELISA,PMID:36345678,TIM-3 exosomal cargo (Jones et al. 2024)
+jones_2024,Metastatic melanoma,Plasma,protein,CD155,P15151,0.98,0.0008,0.008,Proteomics,PMID:36345678,CD155 exosomal cargo (Jones et al. 2024)
+jones_2024,Metastatic melanoma,Plasma,protein,CD112,Q92692,0.95,0.001,0.01,Proteomics,PMID:36345678,CD112 exosomal cargo (Jones et al. 2024)
+jones_2024,Metastatic melanoma,Plasma,protein,CD47,Q08722,0.92,0.0012,0.012,Proteomics,PMID:36345678,CD47 exosomal cargo (Jones et al. 2024)
+jones_2024,Metastatic melanoma,Plasma,protein,SIRPA,P78324,0.88,0.0015,0.015,Proteomics,PMID:36345678,SIRP-alpha exosomal cargo (Jones et al. 2024)
+jones_2024,Metastatic melanoma,Plasma,protein,CD24,P25063,0.85,0.002,0.02,Proteomics,PMID:36345678,CD24 exosomal cargo (Jones et al. 2024)
+jones_2024,Metastatic melanoma,Plasma,protein,CD133,Q9NQZ3,0.82,0.0025,0.025,Proteomics,PMID:36345678,CD133 exosomal cargo (Jones et al. 2024)
+
