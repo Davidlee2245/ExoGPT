@@ -292,17 +292,22 @@ def generate_proteinmpnn_script(config: DesignConfig) -> str:
         "        exit 1",
         "    fi",
         "",
-        "    # Extract base name (e.g., complex_1.pdb -> complex_1)",
+        "    # Extract base name (e.g., backbone_1_0.pdb -> backbone_1_0)",
         '    BASE_NAME=$(basename "$complex_pdb" .pdb)',
+        '    BACKBONE_OUTPUT_DIR="$PROTEINMPNN_OUTPUT/${BASE_NAME}"',
+        '    mkdir -p "$BACKBONE_OUTPUT_DIR"',
         "",
         "    # Run ProteinMPNN for this backbone",
         "    # Format: ProteinMPNN with specified chain and omitted amino acids",
+        "    # Note: ProteinMPNN uses --pdb_path_chains (not --chain_id) and --out_folder (not --out_path)",
+        "    # Output will be in $BACKBONE_OUTPUT_DIR/seqs/${BASE_NAME}.fa",
+        '    cd "$(dirname "$PROTEINMPNN_CMD")" || cd ProteinMPNN || cd .',
         '    $PROTEINMPNN_CMD \\',
         '        --pdb_path "$complex_pdb" \\',
-        f'        --chain_id "$BINDER_CHAIN" \\',
+        f'        --pdb_path_chains "$BINDER_CHAIN" \\',
         f'        --num_seq_per_target $NUM_SEQUENCES \\',
         f'        --omit_AAs "$OMITTED_AA" \\',
-        '        --out_path "$PROTEINMPNN_OUTPUT/${BASE_NAME}_sequences.fasta"',
+        '        --out_folder "$BACKBONE_OUTPUT_DIR"',
         "",
         "    if [ $? -eq 0 ]; then",
         '        echo "✓ Designed sequences for $BASE_NAME"',
@@ -384,14 +389,22 @@ def generate_colabfold_script(config: DesignConfig) -> str:
         "fi",
         "",
         "# Process each ProteinMPNN output",
-        "for seq_file in \"$PROTEINMPNN_OUTPUT\"/*_sequences.fasta; do",
-        "    if [ ! -f \"$seq_file\" ]; then",
+        "# ProteinMPNN outputs to {output_dir}/{backbone_name}/seqs/{backbone_name}.fa",
+        "for backbone_dir in \"$PROTEINMPNN_OUTPUT\"/*/; do",
+        "    if [ ! -d \"$backbone_dir\" ]; then",
         "        echo \"No ProteinMPNN outputs found in $PROTEINMPNN_OUTPUT\"",
         "        exit 1",
         "    fi",
         "",
-        "    # Extract base name",
-        '    BASE_NAME=$(basename "$seq_file" _sequences.fasta)',
+        "    # Find .fa file in seqs subdirectory",
+        '    seq_file=$(find "$backbone_dir/seqs" -name "*.fa" | head -1)',
+        "    if [ ! -f \"$seq_file\" ]; then",
+        "        echo \"Warning: No .fa file found in $backbone_dir/seqs\"",
+        "        continue",
+        "    fi",
+        "",
+        "    # Extract base name from directory (e.g., backbone_1_0/seqs/backbone_1_0.fa -> backbone_1_0)",
+        '    BASE_NAME=$(basename "$backbone_dir")',
         "",
         "    # Create batch FASTA file with target + binder pairs",
         "    # Format: For each binder sequence, create a FASTA entry with target and binder",
@@ -432,7 +445,7 @@ def generate_colabfold_script(config: DesignConfig) -> str:
         "        \"$BATCH_FASTA\" \\",
         "        \"$OUTPUT_DIR_DESIGN\" \\",
         f'        --num-models $NUM_MODELS \\',
-        f'        --num-recycles $NUM_RECYCLES \\',
+        f'        --num-recycle $NUM_RECYCLES \\',  # Fixed: --num-recycle (singular)
         "        --model-type alphafold2_multimer_v3",
         "",
         "    if [ $? -eq 0 ]; then",
@@ -784,6 +797,9 @@ def check_alphafold_available(alphafold_path: Optional[str] = None) -> Tuple[boo
     """
     Check if AlphaFold-Multimer is available.
     
+    Note: ColabFold provides AlphaFold-Multimer functionality via --model-type alphafold2_multimer_v3
+    and is much easier to install. Consider using ColabFold instead.
+    
     Returns:
         (is_available, executable_path, error_message)
     """
@@ -803,7 +819,20 @@ def check_alphafold_available(alphafold_path: Optional[str] = None) -> Tuple[boo
         if os.path.exists(path):
             return True, path, None
     
-    return False, None, "AlphaFold-Multimer not found. Install from: https://github.com/deepmind/alphafold"
+    # Check if ColabFold is available as an alternative
+    cf_available, cf_cmd, _ = check_colabfold_available()
+    if cf_available:
+        return False, None, (
+            "AlphaFold-Multimer not found. Install from: https://github.com/deepmind/alphafold\n"
+            "NOTE: ColabFold is installed and provides AlphaFold-Multimer functionality.\n"
+            "ColabFold uses --model-type alphafold2_multimer_v3 for multimer predictions.\n"
+            "Consider using ColabFold (set use_colabfold=True) instead of AlphaFold-Multimer."
+        )
+    
+    return False, None, (
+        "AlphaFold-Multimer not found. Install from: https://github.com/deepmind/alphafold\n"
+        "Alternatively, install ColabFold (pip install colabfold) which provides AlphaFold-Multimer functionality."
+    )
 
 
 # ============================================================================
@@ -1365,48 +1394,125 @@ def execute_proteinmpnn(
     
     for idx, complex_pdb in enumerate(complex_pdbs):
         base_name = os.path.splitext(os.path.basename(complex_pdb))[0]
-        output_fasta = os.path.join(output_dir, f"{base_name}_sequences.fasta")
+        # ProteinMPNN outputs to {out_folder}/seqs/{pdb_name}.fa
+        # Create a subfolder for this specific backbone to avoid conflicts
+        backbone_output_dir = os.path.join(output_dir, base_name)
+        os.makedirs(backbone_output_dir, exist_ok=True)
+        expected_output_file = os.path.join(backbone_output_dir, "seqs", f"{base_name}.fa")
         
         if progress_callback:
             progress = ((idx + 1) / len(complex_pdbs)) * 100
             progress_callback(f"ProteinMPNN: Designing sequences for backbone {idx+1}/{len(complex_pdbs)} of {target_info}", progress)
         
         # Build command
+        # ProteinMPNN uses --pdb_path_chains (not --chain_id) and --out_folder (not --out_path)
+        # Output goes to {out_folder}/seqs/{pdb_name}.fa
+        backbone_output_dir = os.path.join(output_dir, base_name)
+        os.makedirs(backbone_output_dir, exist_ok=True)
+        expected_output_file = os.path.join(backbone_output_dir, "seqs", f"{base_name}.fa")
+        
+        # Always use python to run the script, even if proteinmpnn_cmd is just a path
         cmd_parts = proteinmpnn_cmd.split()
         if len(cmd_parts) > 1 and cmd_parts[0] == "python":
+            # Already has "python" prefix
             script_path = cmd_parts[1] if len(cmd_parts) > 1 else "protein_mpnn_run.py"
             cmd = [
                 "python", script_path,
                 "--pdb_path", complex_pdb,
-                "--chain_id", config.binder_chain_id,
+                "--pdb_path_chains", config.binder_chain_id,  # Use pdb_path_chains instead of chain_id
                 "--num_seq_per_target", str(config.num_sequences_per_backbone),
                 "--omit_AAs", omitted_aa_str,
-                "--out_path", output_fasta
+                "--out_folder", backbone_output_dir  # Use out_folder instead of out_path
+            ]
+        elif os.path.isfile(proteinmpnn_cmd) or os.path.exists(proteinmpnn_cmd):
+            # It's a file path, use python to run it
+            # Make path absolute if it's relative (for consistency)
+            script_path = os.path.abspath(proteinmpnn_cmd) if not os.path.isabs(proteinmpnn_cmd) else proteinmpnn_cmd
+            cmd = [
+                "python", script_path,
+                "--pdb_path", complex_pdb,
+                "--pdb_path_chains", config.binder_chain_id,  # Use pdb_path_chains instead of chain_id
+                "--num_seq_per_target", str(config.num_sequences_per_backbone),
+                "--omit_AAs", omitted_aa_str,
+                "--out_folder", backbone_output_dir  # Use out_folder instead of out_path
             ]
         else:
+            # Assume it's a command that can be run directly (e.g., "python -m protein_mpnn")
             cmd = [
                 proteinmpnn_cmd,
                 "--pdb_path", complex_pdb,
-                "--chain_id", config.binder_chain_id,
+                "--pdb_path_chains", config.binder_chain_id,  # Use pdb_path_chains instead of chain_id
                 "--num_seq_per_target", str(config.num_sequences_per_backbone),
                 "--omit_AAs", omitted_aa_str,
-                "--out_path", output_fasta
+                "--out_folder", backbone_output_dir  # Use out_folder instead of out_path
             ]
         
+        # Set working directory to ProteinMPNN root so it can find model weights
+        project_root = Path(__file__).parent.parent
+        proteinmpnn_root = os.path.join(str(project_root), "ProteinMPNN")
+        cwd = proteinmpnn_root if os.path.exists(proteinmpnn_root) else None
+        
         try:
+            # Log the command being run for debugging
+            if progress_callback:
+                cmd_str = " ".join(cmd)
+                progress_callback(f"ProteinMPNN: Running command: {cmd_str}", progress)
+                progress_callback(f"ProteinMPNN: Working directory: {cwd}", progress)
+                progress_callback(f"ProteinMPNN: Expected output: {expected_output_file}", progress)
+            
             result = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
                 timeout=600,  # 10 minute timeout
-                check=False
+                check=False,
+                cwd=cwd  # Set working directory to ProteinMPNN root
             )
             
-            if result.returncode == 0 and os.path.exists(output_fasta):
-                generated_files.append(output_fasta)
+            # Check for output file (ProteinMPNN creates seqs/{name}.fa)
+            if result.returncode == 0 and os.path.exists(expected_output_file):
+                generated_files.append(expected_output_file)
+            elif result.returncode == 0:
+                # Try to find any .fa file in the output directory
+                import glob
+                fa_files = glob.glob(os.path.join(backbone_output_dir, "seqs", "*.fa"))
+                if fa_files:
+                    generated_files.extend(fa_files)
+                else:
+                    # Show full output for debugging
+                    full_stdout = result.stdout if result.stdout else "None"
+                    full_stderr = result.stderr if result.stderr else "None"
+                    error_msg = (
+                        f"ProteinMPNN completed but output file not found.\n"
+                        f"Expected: {expected_output_file}\n"
+                        f"Output directory exists: {os.path.exists(backbone_output_dir)}\n"
+                        f"seqs directory exists: {os.path.exists(os.path.join(backbone_output_dir, 'seqs'))}\n"
+                        f"Command: {' '.join(cmd)}\n"
+                        f"Working directory: {cwd}\n"
+                        f"Return code: {result.returncode}\n"
+                        f"STDOUT:\n{full_stdout}\n"
+                        f"STDERR:\n{full_stderr}"
+                    )
+                    errors.append(error_msg)
+                    if progress_callback:
+                        progress_callback(error_msg, progress)
             else:
-                error_msg = f"ProteinMPNN failed for {base_name}: {result.stderr}"
+                # Show full output for debugging
+                full_stdout = result.stdout if result.stdout else "None"
+                full_stderr = result.stderr if result.stderr else "None"
+                error_msg = (
+                    f"ProteinMPNN failed for {base_name}.\n"
+                    f"Return code: {result.returncode}\n"
+                    f"Command: {' '.join(cmd)}\n"
+                    f"Working directory: {cwd}\n"
+                    f"Input PDB: {complex_pdb}\n"
+                    f"Output directory: {backbone_output_dir}\n"
+                    f"STDOUT:\n{full_stdout}\n"
+                    f"STDERR:\n{full_stderr}"
+                )
                 errors.append(error_msg)
+                if progress_callback:
+                    progress_callback(error_msg, progress)
         except subprocess.TimeoutExpired:
             errors.append(f"ProteinMPNN timed out for {base_name}")
         except Exception as e:
@@ -1415,10 +1521,19 @@ def execute_proteinmpnn(
     if progress_callback:
         progress_callback(f"ProteinMPNN: Completed {len(generated_files)}/{len(complex_pdbs)} sequence files for {target_info}", 100.0)
     
+    # Combine all errors into a single error message for display
+    error_summary = None
+    if errors:
+        if len(errors) == 1:
+            error_summary = errors[0]
+        else:
+            error_summary = f"{len(errors)} errors occurred:\n" + "\n".join(f"{i+1}. {e}" for i, e in enumerate(errors))
+    
     return {
         "success": len(generated_files) > 0,
         "generated_files": generated_files,
         "errors": errors,
+        "error": error_summary,  # Single error message for UI display
         "output_dir": output_dir
     }
 
@@ -1456,24 +1571,43 @@ def execute_colabfold(
         from Bio.PDB import PDBParser
         from Bio.SeqUtils import seq1
         
+        # Make model_path absolute if needed
+        model_path = config.model_path
+        if not os.path.isabs(model_path):
+            project_root = Path(__file__).parent.parent
+            model_path = os.path.join(str(project_root), model_path.lstrip('./'))
+            model_path = os.path.normpath(model_path)
+        
         parser = PDBParser(QUIET=True)
-        structure = parser.get_structure("target", config.model_path)
+        structure = parser.get_structure("target", model_path)
         chain = structure[0][config.target_chain_id]
         target_seq = seq1("".join([residue.resname for residue in chain]))
-    except Exception:
-        # Fallback: try to extract sequence another way or use placeholder
+        
+        if not target_seq or len(target_seq) == 0:
+            raise ValueError("Empty target sequence extracted")
+            
         if progress_callback:
-            progress_callback("Warning: Could not extract target sequence from PDB. Using placeholder.", 0.0)
-        target_seq = "PLACEHOLDER_SEQUENCE"  # User needs to replace this
+            progress_callback(f"Extracted target sequence: {len(target_seq)} residues", 0.0)
+    except Exception as e:
+        # Fallback: try to extract sequence another way
+        error_msg = f"Could not extract target sequence from PDB: {str(e)}. PDB path: {config.model_path}"
+        if progress_callback:
+            progress_callback(f"ERROR: {error_msg}", 0.0)
+        return {
+            "success": False,
+            "error": error_msg + ". Please ensure the PDB file exists and contains the target chain.",
+            "generated_files": []
+        }
     
     # Find ProteinMPNN output files
+    # ProteinMPNN outputs to {output_dir}/{backbone_name}/seqs/{backbone_name}.fa
     import glob
-    seq_files = glob.glob(os.path.join(proteinmpnn_output_dir, "*_sequences.fasta"))
+    seq_files = glob.glob(os.path.join(proteinmpnn_output_dir, "**", "seqs", "*.fa"), recursive=True)
     
     if not seq_files:
         return {
             "success": False,
-            "error": f"No ProteinMPNN outputs found in {proteinmpnn_output_dir}",
+            "error": f"No ProteinMPNN outputs found in {proteinmpnn_output_dir} (looking for **/seqs/*.fa files)",
             "generated_files": []
         }
     
@@ -1490,13 +1624,14 @@ def execute_colabfold(
                 target_info += f" / {path_parts[designs_idx + 2]}"
     
     if progress_callback:
-        progress_callback(f"ColabFold: Now processing target {target_info} ({len(seq_files)} sequences)", 0.0)
+        progress_callback(f"ColabFold: Now processing target {target_info} ({len(seq_files)} sequence files)", 0.0)
     
     generated_files = []
     errors = []
     
     for idx, seq_file in enumerate(seq_files):
-        base_name = os.path.basename(seq_file).replace("_sequences.fasta", "")
+        # Extract base name from file path (e.g., .../backbone_1_0/seqs/backbone_1_0.fa -> backbone_1_0)
+        base_name = os.path.splitext(os.path.basename(seq_file))[0]
         design_output_dir = os.path.join(output_dir, base_name)
         os.makedirs(design_output_dir, exist_ok=True)
         
@@ -1511,41 +1646,62 @@ def execute_colabfold(
                 sequences = f.read()
             
             # Parse sequences and create target:binder pairs
+            # ColabFold multimer expects sequences on the same line separated by ':'
+            # Format: >name\nTARGET_SEQ:BINDER_SEQ
             with open(batch_fasta, "w") as f:
                 seq_count = 0
                 current_seq = ""
                 for line in sequences.split("\n"):
                     if line.startswith(">"):
-                        if current_seq:
-                            # Write previous sequence pair
-                            f.write(f">{base_name}_seq{seq_count}_target\n")
-                            f.write(f"{target_seq}\n")
-                            f.write(f">{base_name}_seq{seq_count}_binder\n")
-                            f.write(f"{current_seq}\n")
+                        if current_seq and current_seq.strip():
+                            # Skip sequences that look invalid (e.g., all G's, too short, etc.)
+                            seq_clean = current_seq.strip()
+                            if len(seq_clean) < 10:
+                                current_seq = ""
+                                continue
+                            if seq_clean.count('G') == len(seq_clean):  # Skip all-G sequences
+                                current_seq = ""
+                                continue
+                            
+                            # ColabFold multimer format: TARGET:BINDER on same line
+                            f.write(f">{base_name}_seq{seq_count}\n")
+                            f.write(f"{target_seq}:{seq_clean}\n")
                             seq_count += 1
                             current_seq = ""
-                    elif line.strip():
+                    elif line.strip() and not line.startswith("#"):
                         current_seq += line.strip()
                 
                 # Write last sequence
-                if current_seq:
-                    f.write(f">{base_name}_seq{seq_count}_target\n")
-                    f.write(f"{target_seq}\n")
-                    f.write(f">{base_name}_seq{seq_count}_binder\n")
-                    f.write(f"{current_seq}\n")
+                if current_seq and current_seq.strip():
+                    seq_clean = current_seq.strip()
+                    if len(seq_clean) >= 10 and seq_clean.count('G') != len(seq_clean):
+                        f.write(f">{base_name}_seq{seq_count}\n")
+                        f.write(f"{target_seq}:{seq_clean}\n")
+                        seq_count += 1
+                
+                if seq_count == 0:
+                    raise ValueError(f"No valid sequences found in {seq_file}")
         except Exception as e:
             errors.append(f"Failed to create batch FASTA for {base_name}: {str(e)}")
             continue
         
         # Run ColabFold
+        # Note: ColabFold uses --num-recycle (singular), not --num-recycles
         cmd = [
             colabfold_cmd,
             batch_fasta,
             design_output_dir,
             "--num-models", str(config.num_af_models),
-            "--num-recycles", str(config.num_af_recycles),
+            "--num-recycle", str(config.num_af_recycles),  # Fixed: --num-recycle (singular)
             "--model-type", "alphafold2_multimer_v3"
         ]
+        
+        # Log command for debugging
+        if progress_callback:
+            cmd_str = " ".join(cmd)
+            progress_callback(f"ColabFold: Running command: {cmd_str}", progress)
+            progress_callback(f"ColabFold: Input FASTA: {batch_fasta}", progress)
+            progress_callback(f"ColabFold: Output directory: {design_output_dir}", progress)
         
         try:
             result = subprocess.run(
@@ -1556,15 +1712,61 @@ def execute_colabfold(
                 check=False
             )
             
+            # Show full output for debugging
+            full_stdout = result.stdout if result.stdout else "None"
+            full_stderr = result.stderr if result.stderr else "None"
+            
             if result.returncode == 0:
-                # Check for output files
-                output_files = glob.glob(os.path.join(design_output_dir, "*.pdb"))
+                # ColabFold outputs files with pattern: {name}_unrelaxed_rank_*.pdb or {name}_relaxed_rank_*.pdb
+                # Also check for .scores.json and other output files
+                # ColabFold may create subdirectories or put files directly in output dir
+                output_files = []
+                # Check for PDB files (unrelaxed and relaxed)
+                output_files.extend(glob.glob(os.path.join(design_output_dir, "*_unrelaxed_rank_*.pdb")))
+                output_files.extend(glob.glob(os.path.join(design_output_dir, "*_relaxed_rank_*.pdb")))
+                output_files.extend(glob.glob(os.path.join(design_output_dir, "*.pdb")))
+                output_files.extend(glob.glob(os.path.join(design_output_dir, "*.cif")))
+                # Also check recursively in subdirectories
+                output_files.extend(glob.glob(os.path.join(design_output_dir, "**", "*_unrelaxed_rank_*.pdb"), recursive=True))
+                output_files.extend(glob.glob(os.path.join(design_output_dir, "**", "*_relaxed_rank_*.pdb"), recursive=True))
+                output_files.extend(glob.glob(os.path.join(design_output_dir, "**", "*.pdb"), recursive=True))
+                output_files.extend(glob.glob(os.path.join(design_output_dir, "**", "*.cif"), recursive=True))
+                
+                # Remove duplicates
+                output_files = list(set(output_files))
+                
                 if output_files:
                     generated_files.extend(output_files)
+                    if progress_callback:
+                        progress_callback(f"ColabFold: Generated {len(output_files)} output files for {base_name}", progress)
                 else:
-                    errors.append(f"No output files generated for {base_name}")
+                    # Check what files were actually created
+                    all_files = glob.glob(os.path.join(design_output_dir, "**", "*"), recursive=True)
+                    all_files = [f for f in all_files if os.path.isfile(f)]
+                    error_msg = (
+                        f"ColabFold completed but no PDB/CIF files found for {base_name}.\n"
+                        f"Return code: {result.returncode}\n"
+                        f"Output directory: {design_output_dir}\n"
+                        f"All files in output directory ({len(all_files)} files):\n{chr(10).join(all_files[:20])}\n"
+                        f"STDOUT (last 3000 chars):\n{full_stdout[-3000:] if len(full_stdout) > 3000 else full_stdout}\n"
+                        f"STDERR:\n{full_stderr}"
+                    )
+                    errors.append(error_msg)
+                    if progress_callback:
+                        progress_callback(error_msg, progress)
             else:
-                errors.append(f"ColabFold failed for {base_name}: {result.stderr}")
+                error_msg = (
+                    f"ColabFold failed for {base_name}.\n"
+                    f"Return code: {result.returncode}\n"
+                    f"Command: {' '.join(cmd)}\n"
+                    f"Input FASTA: {batch_fasta}\n"
+                    f"Output directory: {design_output_dir}\n"
+                    f"STDOUT:\n{full_stdout}\n"
+                    f"STDERR:\n{full_stderr}"
+                )
+                errors.append(error_msg)
+                if progress_callback:
+                    progress_callback(error_msg, progress)
         except subprocess.TimeoutExpired:
             errors.append(f"ColabFold timed out for {base_name}")
         except Exception as e:
@@ -1663,8 +1865,25 @@ def generate_design_plan(
             tool_status["colabfold"] = {
                 "available": cf_available,
                 "command": cf_cmd,
-                "error": cf_error
+                "error": cf_error,
+                "note": "ColabFold provides AlphaFold-Multimer functionality via --model-type alphafold2_multimer_v3"
             }
+            # Also check AlphaFold for informational purposes, but note that ColabFold is being used
+            af_available, af_cmd, af_error = check_alphafold_available(alphafold_path)
+            if not af_available and cf_available:
+                # ColabFold is available, so AlphaFold warning is not critical
+                tool_status["alphafold"] = {
+                    "available": False,
+                    "command": None,
+                    "error": "AlphaFold-Multimer not installed (using ColabFold instead, which provides AlphaFold-Multimer models)",
+                    "note": "ColabFold is installed and will be used for structure prediction"
+                }
+            else:
+                tool_status["alphafold"] = {
+                    "available": af_available,
+                    "command": af_cmd,
+                    "error": af_error
+                }
         else:
             af_available, af_cmd, af_error = check_alphafold_available(alphafold_path)
             tool_status["alphafold"] = {
@@ -1833,7 +2052,7 @@ def generate_design_plan(
         "pipeline_steps": [
             "1. RFdiffusion: Generate binder backbones",
             "2. ProteinMPNN: Design sequences for backbones",
-            f"3. {'ColabFold' if use_colabfold else 'AlphaFold-Multimer'}: Predict complex structures"
+            f"3. {'ColabFold (AlphaFold-Multimer models)' if use_colabfold else 'AlphaFold-Multimer'}: Predict complex structures"
         ],
     }
     
