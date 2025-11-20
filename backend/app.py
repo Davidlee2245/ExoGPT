@@ -7,12 +7,21 @@ import os
 import sys
 import json
 import subprocess
+import threading
+import queue
 from pathlib import Path
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response, stream_with_context
 from flask_cors import CORS
 
 app = Flask(__name__)
-CORS(app)  # Enable CORS for React frontend
+# Enable CORS for React frontend, including SSE endpoints
+CORS(app, resources={
+    r"/api/*": {
+        "origins": "*",
+        "methods": ["GET", "POST", "OPTIONS"],
+        "allow_headers": ["Content-Type", "Authorization"]
+    }
+})
 
 # Add the project root to Python path
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -281,9 +290,194 @@ def run_step2():
         }), 500
 
 
+@app.route("/api/step3/stream", methods=["POST", "OPTIONS"])
+def run_step3_stream():
+    """Execute Step 3 with Server-Sent Events (SSE) for real-time progress streaming"""
+    # Handle CORS preflight
+    if request.method == "OPTIONS":
+        response = jsonify({})
+        response.headers.add("Access-Control-Allow-Origin", "*")
+        response.headers.add("Access-Control-Allow-Headers", "Content-Type")
+        response.headers.add("Access-Control-Allow-Methods", "POST, OPTIONS")
+        return response
+    
+    try:
+        data = request.json
+        step2_json_path = data.get("step2_json_path")
+        step2_json_data = data.get("step2_json_data")
+        output_base_dir = data.get("output_base_dir", "./workflows")
+        binder_length = data.get("binder_length", 90)
+        num_backbones = data.get("num_backbones", 10)
+        num_sequences_per_backbone = data.get("num_sequences_per_backbone", 8)
+        num_af_models = data.get("num_af_models", 5)
+        num_af_recycles = data.get("num_af_recycles", 3)
+        use_colabfold = data.get("use_colabfold", True)
+        rfdiffusion_path = data.get("rfdiffusion_path")
+        proteinmpnn_path = data.get("proteinmpnn_path")
+        colabfold_path = data.get("colabfold_path")
+        alphafold_path = data.get("alphafold_path")
+        execute = data.get("execute", False)
+        
+        # Either step2_json_path or step2_json_data must be provided
+        if not step2_json_path and not step2_json_data:
+            return jsonify({"error": "step2_json_path or step2_json_data is required"}), 400
+        
+        # Import Step 3 module
+        from exo_gpt.step3_nanobinder_orchestrator import generate_design_plan
+        
+        # If JSON data is provided directly, write it to a temp file
+        temp_file_created = False
+        if step2_json_data:
+            import tempfile
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+                json.dump(step2_json_data, f)
+                step2_json_path = f.name
+                temp_file_created = True
+        else:
+            # Ensure step2_json_path is absolute and normalize path
+            if step2_json_path:
+                # Remove leading ./ if present
+                if step2_json_path.startswith('./'):
+                    step2_json_path = step2_json_path[2:]
+                # Make absolute if relative
+                if not os.path.isabs(step2_json_path):
+                    step2_json_path = os.path.join(PROJECT_ROOT, step2_json_path)
+                # Normalize path
+                step2_json_path = os.path.normpath(step2_json_path)
+        
+        if not os.path.exists(step2_json_path):
+            return jsonify({"error": f"Step 2 JSON file not found: {step2_json_path}"}), 400
+        
+        # Ensure output_base_dir is absolute
+        if not os.path.isabs(output_base_dir):
+            output_base_dir = os.path.join(PROJECT_ROOT, output_base_dir)
+        
+        # Queue for progress messages
+        progress_queue = queue.Queue()
+        plan_result = {"plan": None, "error": None}
+        
+        def progress_callback(message: str, percent: float):
+            """Progress callback that sends messages via queue"""
+            progress_queue.put({"message": message, "percent": percent})
+        
+        def run_generation():
+            """Run the design plan generation in a separate thread"""
+            try:
+                plan = generate_design_plan(
+                    step2_json_path=step2_json_path,
+                    output_base_dir=output_base_dir,
+                    binder_length=binder_length,
+                    num_backbones=num_backbones,
+                    num_sequences_per_backbone=num_sequences_per_backbone,
+                    num_af_models=num_af_models,
+                    num_af_recycles=num_af_recycles,
+                    use_colabfold=use_colabfold,
+                    rfdiffusion_path=rfdiffusion_path,
+                    proteinmpnn_path=proteinmpnn_path,
+                    colabfold_path=colabfold_path,
+                    alphafold_path=alphafold_path,
+                    execute=execute,
+                    progress_callback=progress_callback if execute else None,
+                )
+                plan_result["plan"] = plan
+            except Exception as e:
+                import traceback
+                plan_result["error"] = {
+                    "message": str(e),
+                    "traceback": traceback.format_exc()
+                }
+            finally:
+                # Signal completion
+                progress_queue.put(None)
+                # Clean up temp file if created
+                if temp_file_created and os.path.exists(step2_json_path):
+                    try:
+                        os.unlink(step2_json_path)
+                    except:
+                        pass
+        
+        # Start generation in background thread
+        thread = threading.Thread(target=run_generation, daemon=True)
+        thread.start()
+        
+        def generate():
+            """Generator function for SSE streaming"""
+            try:
+                completed = False
+                while not completed:
+                    try:
+                        # Get message from queue with timeout
+                        item = progress_queue.get(timeout=1.0)
+                        
+                        # None signals completion
+                        if item is None:
+                            completed = True
+                            # Wait a bit for plan_result to be set
+                            import time
+                            for _ in range(10):  # Wait up to 1 second
+                                if plan_result["plan"] is not None or plan_result["error"] is not None:
+                                    break
+                                time.sleep(0.1)
+                            
+                            # Send final result
+                            if plan_result["plan"]:
+                                yield f"data: {json.dumps({'type': 'result', 'plan': plan_result['plan']})}\n\n"
+                            elif plan_result["error"]:
+                                yield f"data: {json.dumps({'type': 'error', 'error': plan_result['error']})}\n\n"
+                            else:
+                                yield f"data: {json.dumps({'type': 'error', 'error': {'message': 'Generation completed but no result available'}})}\n\n"
+                            break
+                        
+                        # Send progress message
+                        yield f"data: {json.dumps({'type': 'progress', 'message': item['message'], 'percent': item['percent']})}\n\n"
+                    except queue.Empty:
+                        # Send keepalive to keep connection alive
+                        yield ": keepalive\n\n"
+                        # Check if thread is still alive
+                        if not thread.is_alive() and not completed:
+                            # Thread finished, wait for result
+                            import time
+                            time.sleep(0.2)
+                            if plan_result["plan"] is not None:
+                                yield f"data: {json.dumps({'type': 'result', 'plan': plan_result['plan']})}\n\n"
+                                completed = True
+                            elif plan_result["error"] is not None:
+                                yield f"data: {json.dumps({'type': 'error', 'error': plan_result['error']})}\n\n"
+                                completed = True
+                        continue
+            except Exception as e:
+                import traceback
+                yield f"data: {json.dumps({'type': 'error', 'error': {'message': str(e), 'traceback': traceback.format_exc()}})}\n\n"
+        
+        response = Response(
+            stream_with_context(generate()),
+            mimetype='text/event-stream',
+            headers={
+                'Cache-Control': 'no-cache',
+                'X-Accel-Buffering': 'no',
+                'Connection': 'keep-alive',
+                'Access-Control-Allow-Origin': '*',
+                'Access-Control-Allow-Headers': 'Content-Type',
+                'Access-Control-Allow-Methods': 'POST, OPTIONS'
+            }
+        )
+        return response
+        
+    except Exception as e:
+        import traceback
+        # For streaming endpoint, return JSON error with CORS headers
+        error_response = jsonify({
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        })
+        error_response.headers.add("Access-Control-Allow-Origin", "*")
+        return error_response, 500
+
+
 @app.route("/api/step3/run", methods=["POST"])
 def run_step3():
-    """Execute Step 3: Nanobinder Design Orchestrator"""
+    """Execute Step 3: Nanobinder Design Orchestrator (non-streaming, for non-execute mode)"""
     try:
         data = request.json
         step2_json_path = data.get("step2_json_path")

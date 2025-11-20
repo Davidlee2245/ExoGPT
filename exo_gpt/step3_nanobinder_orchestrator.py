@@ -285,7 +285,8 @@ def generate_proteinmpnn_script(config: DesignConfig) -> str:
         "fi",
         "",
         "# Process each RFdiffusion output",
-        "for complex_pdb in \"$RFDIFFUSION_OUTPUT\"/complex_*.pdb; do",
+        "# RFdiffusion generates files with pattern: backbone_*.pdb (e.g., backbone_1_0.pdb, backbone_2_0.pdb)",
+        "for complex_pdb in \"$RFDIFFUSION_OUTPUT\"/backbone_*.pdb; do",
         "    if [ ! -f \"$complex_pdb\" ]; then",
         "        echo \"No RFdiffusion outputs found in $RFDIFFUSION_OUTPUT\"",
         "        exit 1",
@@ -629,29 +630,38 @@ def check_rfdiffusion_available(rfdiffusion_path: Optional[str] = None) -> Tuple
         else:
             return False, None, f"RFdiffusion path does not exist: {rfdiffusion_path}"
     
-    # Try common RFdiffusion installation paths
+    # Get project root (where exo_gpt module is located)
+    # This file is in exo_gpt/, so parent is project root
+    project_root = Path(__file__).parent.parent
+    cwd = os.getcwd()
+    
+    # Try common RFdiffusion installation paths (relative and absolute)
+    # Prefer script paths over module imports
     common_paths = [
-        "rfdiffusion",
-        "python -m rfdiffusion",
-        "scripts/run_inference.py",
+        os.path.join(str(project_root), "RFdiffusion", "scripts", "run_inference.py"),
+        os.path.join(str(project_root), "rfdiffusion", "scripts", "run_inference.py"),
+        os.path.join(cwd, "RFdiffusion", "scripts", "run_inference.py"),
+        os.path.join(cwd, "rfdiffusion", "scripts", "run_inference.py"),
         "RFdiffusion/scripts/run_inference.py",
+        "rfdiffusion/scripts/run_inference.py",
+        "scripts/run_inference.py",
     ]
     
     for path in common_paths:
         try:
-            # Try to import or check if command exists
-            if path.startswith("python"):
-                # Try importing the module
-                module_name = path.split()[-1]
-                try:
-                    __import__(module_name)
-                    return True, path, None
-                except ImportError:
-                    continue
-            elif os.path.exists(path):
-                return True, path, None
+            if os.path.exists(path):
+                # Make path absolute for consistency
+                abs_path = os.path.abspath(path)
+                return True, abs_path, None
         except Exception:
             continue
+    
+    # Fallback: try module import
+    try:
+        __import__("rfdiffusion")
+        return True, "python -m rfdiffusion", None
+    except ImportError:
+        pass
     
     # Try checking if it's in PATH
     try:
@@ -666,7 +676,15 @@ def check_rfdiffusion_available(rfdiffusion_path: Optional[str] = None) -> Tuple
     except Exception:
         pass
     
-    return False, None, "RFdiffusion not found. Install from: https://github.com/RosettaCommons/RFdiffusion"
+    return False, None, (
+        "RFdiffusion not found. Install from: https://github.com/RosettaCommons/RFdiffusion\n"
+        "Installation Instructions (in ExoGPT environment):\n"
+        "1. cd RFdiffusion/env/SE3Transformer && pip install -e . && cd ../..\n"
+        "2. cd RFdiffusion && pip install -e . --no-deps\n"
+        "3. pip install omegaconf hydra-core e3nn wandb dgl\n"
+        "4. Download model weights: mkdir -p models && cd models && wget http://files.ipd.uw.edu/pub/RFdiffusion/.../Base_ckpt.pt\n"
+        "See RFdiffusion/README.md for full instructions."
+    )
 
 
 def check_proteinmpnn_available(proteinmpnn_path: Optional[str] = None) -> Tuple[bool, Optional[str], Optional[str]]:
@@ -682,10 +700,19 @@ def check_proteinmpnn_available(proteinmpnn_path: Optional[str] = None) -> Tuple
         else:
             return False, None, f"ProteinMPNN path does not exist: {proteinmpnn_path}"
     
-    # Try common ProteinMPNN installation paths
+    # Get project root (where exo_gpt module is located)
+    # This file is in exo_gpt/, so parent is project root
+    project_root = Path(__file__).parent.parent
+    cwd = os.getcwd()
+    
+    # Try common ProteinMPNN installation paths (relative and absolute)
     common_paths = [
         "protein_mpnn_run.py",
         "ProteinMPNN/protein_mpnn_run.py",
+        os.path.join(str(project_root), "ProteinMPNN", "protein_mpnn_run.py"),
+        os.path.join(str(project_root), "protein_mpnn_run.py"),
+        os.path.join(cwd, "ProteinMPNN", "protein_mpnn_run.py"),
+        os.path.join(cwd, "protein_mpnn_run.py"),
         "python -m protein_mpnn",
     ]
     
@@ -699,7 +726,9 @@ def check_proteinmpnn_available(proteinmpnn_path: Optional[str] = None) -> Tuple
                 except ImportError:
                     continue
             elif os.path.exists(path):
-                return True, path, None
+                # Make path absolute for consistency
+                abs_path = os.path.abspath(path)
+                return True, abs_path, None
         except Exception:
             continue
     
@@ -781,6 +810,88 @@ def check_alphafold_available(alphafold_path: Optional[str] = None) -> Tuple[boo
 # Tool Execution Functions
 # ============================================================================
 
+def map_epitope_residues_to_pdb(
+    epitope_residues: List[int],
+    pdb_path: str,
+    chain_id: str,
+    domain_residues: Optional[Tuple[int, int]] = None
+) -> List[int]:
+    """
+    Map epitope residues (UniProt numbering) to PDB residue numbers.
+    
+    For PDB fragments, PDB residue numbers typically correspond directly to 
+    UniProt residue numbers (PDB residue 33 = UniProt residue 33).
+    This function validates that epitope residues exist in the PDB file.
+    
+    Args:
+        epitope_residues: List of epitope residue numbers (UniProt numbering)
+        pdb_path: Path to PDB file
+        chain_id: Chain ID in PDB (e.g., "A")
+        domain_residues: Optional (start, end) tuple for domain in UniProt numbering
+    
+    Returns:
+        List of PDB residue numbers that exist in the PDB file
+    """
+    try:
+        from Bio.PDB import PDBParser
+        parser = PDBParser(QUIET=True)
+        
+        # Make path absolute if needed
+        if not os.path.isabs(pdb_path):
+            project_root = Path(__file__).parent.parent
+            pdb_path = os.path.join(str(project_root), pdb_path.lstrip('./'))
+            pdb_path = os.path.normpath(pdb_path)
+        
+        if not os.path.exists(pdb_path):
+            # If PDB doesn't exist, return original residues (will fail later with better error)
+            return epitope_residues
+        
+        structure = parser.get_structure("target", pdb_path)
+        chain = structure[0][chain_id]
+        residues = list(chain.get_residues())
+        
+        if not residues:
+            return epitope_residues
+        
+        # Get actual PDB residue numbers
+        pdb_residue_numbers = set()
+        for r in residues:
+            if r.id[0] == ' ':  # Only regular residues, not heteroatoms
+                pdb_residue_numbers.add(r.id[1])
+        
+        # For PDB fragments, PDB residue numbers = UniProt residue numbers
+        # So we can directly check if epitope residues exist in PDB
+        valid_residues = []
+        invalid_residues = []
+        
+        for res in epitope_residues:
+            if res in pdb_residue_numbers:
+                valid_residues.append(res)
+            else:
+                invalid_residues.append(res)
+        
+        if invalid_residues:
+            # Log warning but continue with valid residues
+            import warnings
+            warnings.warn(
+                f"Some epitope residues not found in PDB: {invalid_residues}. "
+                f"PDB has residues {min(pdb_residue_numbers)}-{max(pdb_residue_numbers)}. "
+                f"Using valid residues: {valid_residues}"
+            )
+        
+        if not valid_residues:
+            # If no valid residues, return original (will fail with better error message)
+            return epitope_residues
+        
+        return valid_residues
+        
+    except Exception as e:
+        # If parsing fails, return original residues (will fail later with better error)
+        import warnings
+        warnings.warn(f"Could not parse PDB to validate epitope residues: {str(e)}")
+        return epitope_residues
+
+
 def execute_rfdiffusion(
     config: DesignConfig,
     rfdiffusion_cmd: str,
@@ -807,7 +918,30 @@ def execute_rfdiffusion(
     os.makedirs(output_dir, exist_ok=True)
     
     if progress_callback:
-        progress_callback(f"Starting RFdiffusion for {config.target_name} / {config.epitope_id}", 0.0)
+        progress_callback(f"RFdiffusion: Now processing target {config.target_name} / {config.epitope_id}", 0.0)
+    
+    # Validate PDB file exists before starting
+    model_path = config.model_path
+    if not os.path.isabs(model_path):
+        project_root = Path(__file__).parent.parent
+        model_path = os.path.join(str(project_root), model_path.lstrip('./'))
+        model_path = os.path.normpath(model_path)
+    
+    if not os.path.exists(model_path):
+        error_msg = (
+            f"RFdiffusion: PDB file not found: {model_path}\n"
+            f"Please download the structure file. For PDB ID {config.pdb_id or 'N/A'}, "
+            f"download from: https://www.rcsb.org/structure/{config.pdb_id if config.pdb_id else 'UNKNOWN'}\n"
+            f"Or for AlphaFold models, download from: https://alphafold.ebi.ac.uk/entry/{config.uniprot or 'UNKNOWN'}"
+        )
+        if progress_callback:
+            progress_callback(error_msg, 0.0)
+        return {
+            "success": False,
+            "generated_files": [],
+            "errors": [error_msg],
+            "error_summary": f"PDB file not found: {model_path}"
+        }
     
     generated_files = []
     errors = []
@@ -823,67 +957,352 @@ def execute_rfdiffusion(
         
         if progress_callback:
             progress = (i / config.num_backbones) * 100
-            progress_callback(f"Generating backbone {i}/{config.num_backbones}", progress)
+            progress_callback(f"RFdiffusion: Generating backbone {i}/{config.num_backbones} for {config.target_name} / {config.epitope_id}", progress)
         
-        # Build command - this is a template that needs to be adjusted
-        # based on actual RFdiffusion installation
-        epitope_res_str = ",".join(map(str, config.epitope_residues))
+        # RFdiffusion uses Hydra config syntax
+        # Format: 'contigmap.contigs=[TARGET_CHAIN/0 BINDER_LENGTH]' 'ppi.hotspot_res=[CHAIN_RES,...]'
+        # Example: 'contigmap.contigs=[A1-150/0 70-100]' 'ppi.hotspot_res=[A59,A83,A91]'
         
-        # Try different command formats
-        cmd_parts = rfdiffusion_cmd.split()
-        if len(cmd_parts) > 1 and cmd_parts[0] == "python":
-            # Python script execution
-            script_path = cmd_parts[1] if len(cmd_parts) > 1 else "scripts/run_inference.py"
-            cmd = [
-                "python", script_path,
-                "--target_pdb", config.model_path,
-                "--target_chain", config.target_chain_id,
-                "--hotspot_residues", epitope_res_str,
-                "--binder_length", str(config.binder_length),
-                "--output_pdb", output_pdb,
-                "--num_samples", "1"
-            ]
+        # Build hotspot residues string (format: CHAIN_RES,CHAIN_RES,...)
+        # Epitope residues are in UniProt numbering, which directly maps to PDB residue numbers for fragments
+        # Format from examples: 'ppi.hotspot_res=[A59,A83,A91]'
+        # Note: The brackets will be added in the command, so we just need the comma-separated list
+        
+        # Map epitope residues (UniProt numbering) to PDB residue numbers
+        # For PDB fragments, UniProt residue numbers = PDB residue numbers
+        # We need to validate that the residues exist in the PDB file
+        pdb_epitope_residues = map_epitope_residues_to_pdb(
+            config.epitope_residues,
+            model_path,
+            config.target_chain_id,
+            getattr(config, 'domain_residues', None)
+        )
+        
+        if not pdb_epitope_residues:
+            error_msg = (
+                f"RFdiffusion: No valid epitope residues found in PDB file.\n"
+                f"Epitope residues (UniProt): {config.epitope_residues}\n"
+                f"Please check that epitope residues correspond to residues in the PDB file."
+            )
+            errors.append(error_msg)
+            if progress_callback:
+                progress_callback(error_msg, (i / config.num_backbones) * 100)
+            continue  # Skip this backbone
+        
+        # Build hotspot residue list using validated PDB residue numbers
+        # pdb_epitope_residues already contains only residues that exist in the PDB
+        hotspot_res_list = [f"{config.target_chain_id}{res}" for res in pdb_epitope_residues]
+        
+        hotspot_res_str = ','.join(hotspot_res_list)  # Just the values, brackets added in command
+        
+        # Build contig string: [TARGET_REGION/0 BINDER_LENGTH]
+        # Format: [CHAIN_START-END/0 BINDER_MIN-BINDER_MAX]
+        # We'll use a range for binder length to allow some variation
+        binder_min = max(70, config.binder_length - 10)
+        binder_max = config.binder_length + 10
+        
+        # Get actual residue numbers from PDB file (to handle gaps in numbering)
+        # PDB files may have gaps (e.g., residues 60, 62, 63 exist but 61 doesn't)
+        # We need to use only residues that actually exist
+        target_start = 1
+        target_end = 150
+        actual_residue_numbers = []
+        try:
+            from Bio.PDB import PDBParser
+            parser = PDBParser(QUIET=True)
+            structure = parser.get_structure("target", model_path)
+            chain = structure[0][config.target_chain_id]
+            residues = list(chain.get_residues())
+            if residues:
+                # Get actual residue numbers (PDB numbering, not sequential)
+                actual_residue_numbers = sorted([r.id[1] for r in residues if r.id[0] == ' '])  # Only regular residues, not heteroatoms
+                if actual_residue_numbers:
+                    target_start = min(actual_residue_numbers)
+                    target_end = max(actual_residue_numbers)
+                    # Log for debugging
+                    if progress_callback:
+                        progress_callback(f"RFdiffusion: PDB chain {config.target_chain_id} residue range: {target_start}-{target_end} (actual residues: {len(actual_residue_numbers)} residues)", progress)
+        except Exception as e:
+            # Fallback: use a reasonable default
+            # If we can't parse, assume starting at 1
+            target_start = 1
+            target_end = 150
+            if progress_callback:
+                progress_callback(f"RFdiffusion: Warning - Could not parse PDB residue numbers, using default range 1-150: {str(e)}", progress)
+        
+        # Check if there are gaps in residue numbering
+        # If there are gaps, we need to list individual residues instead of using a range
+        if actual_residue_numbers:
+            expected_residues = set(range(target_start, target_end + 1))
+            actual_residues_set = set(actual_residue_numbers)
+            missing_residues = expected_residues - actual_residues_set
+            
+            if missing_residues:
+                # There are gaps - need to build contig with individual residue ranges
+                # Group consecutive residues into ranges
+                residue_ranges = []
+                start = actual_residue_numbers[0]
+                end = actual_residue_numbers[0]
+                
+                for i in range(1, len(actual_residue_numbers)):
+                    if actual_residue_numbers[i] == end + 1:
+                        # Consecutive, extend range
+                        end = actual_residue_numbers[i]
+                    else:
+                        # Gap found, save current range and start new one
+                        if start == end:
+                            residue_ranges.append(f"{config.target_chain_id}{start}")
+                        else:
+                            residue_ranges.append(f"{config.target_chain_id}{start}-{end}")
+                        start = actual_residue_numbers[i]
+                        end = actual_residue_numbers[i]
+                
+                # Add last range
+                if start == end:
+                    residue_ranges.append(f"{config.target_chain_id}{start}")
+                else:
+                    residue_ranges.append(f"{config.target_chain_id}{start}-{end}")
+                
+                # Build contig with "/" separated ranges (RFdiffusion format for multiple receptor fragments)
+                # Format: A33-60/A62-149/0 80-100 (multiple fragments separated by /)
+                contig_value = f"{'/'.join(residue_ranges)}/0 {binder_min}-{binder_max}"
+                if progress_callback:
+                    progress_callback(f"RFdiffusion: PDB has gaps, using contig: {contig_value}", progress)
+            else:
+                # No gaps, use simple range
+                contig_value = f"{config.target_chain_id}{target_start}-{target_end}/0 {binder_min}-{binder_max}"
         else:
-            # Assume it's a direct executable
-            cmd = [
-                rfdiffusion_cmd,
-                "--target_pdb", config.model_path,
-                "--target_chain", config.target_chain_id,
-                "--hotspot_residues", epitope_res_str,
-                "--binder_length", str(config.binder_length),
-                "--output_pdb", output_pdb
-            ]
+            # Fallback: use simple range
+            contig_value = f"{config.target_chain_id}{target_start}-{target_end}/0 {binder_min}-{binder_max}"
+        
+        # Determine script path
+        is_python_script = rfdiffusion_cmd.endswith('.py') or (os.path.isfile(rfdiffusion_cmd) and rfdiffusion_cmd.endswith('.py'))
+        cmd_parts = rfdiffusion_cmd.split()
+        
+        if is_python_script:
+            script_path = rfdiffusion_cmd
+        elif len(cmd_parts) > 1 and cmd_parts[0] == "python":
+            script_path = cmd_parts[1]
+        else:
+            # Default to RFdiffusion scripts path
+            project_root = Path(__file__).parent.parent
+            script_path = os.path.join(str(project_root), "RFdiffusion", "scripts", "run_inference.py")
+        
+        # Build Hydra command
+        # Output prefix (without .pdb extension - RFdiffusion adds it)
+        output_prefix = os.path.join(output_dir, f"backbone_{i}")
+        
+        # Hydra syntax: contigmap.contigs=[VALUE] where VALUE contains the contig specification
+        # According to RFdiffusion README: "the entire argument MUST be enclosed in '' so that 
+        # the commandline does not attempt to parse any of the special characters"
+        # However, when using subprocess.run() with a list, we don't use shell quotes.
+        # The brackets are part of the value that Hydra will parse.
+        # Format: contigmap.contigs=[CHAIN_START-END/0 BINDER_MIN-BINDER_MAX]
+        contig_arg = f"contigmap.contigs=[{contig_value}]"
+        hotspot_arg = f"ppi.hotspot_res=[{hotspot_res_str}]"
+        
+        # Make model_path absolute if it's relative (needed when cwd is RFdiffusion root)
+        model_path = config.model_path
+        if not os.path.isabs(model_path):
+            # If relative, make it absolute relative to project root
+            project_root = Path(__file__).parent.parent
+            model_path = os.path.join(str(project_root), model_path.lstrip('./'))
+            model_path = os.path.normpath(model_path)
+        
+        # Validate that the PDB file exists
+        if not os.path.exists(model_path):
+            error_msg = (
+                f"RFdiffusion: PDB file not found: {model_path}\n"
+                f"Please ensure the structure file exists. For PDB files, you may need to download them from RCSB PDB.\n"
+                f"For AlphaFold models, you may need to download them from AlphaFold DB."
+            )
+            errors.append(error_msg)
+            if progress_callback:
+                progress_callback(error_msg, (i / config.num_backbones) * 100)
+            continue  # Skip this backbone
+        
+        cmd = [
+            "python", script_path,
+            f"inference.input_pdb={model_path}",
+            f"inference.output_prefix={output_prefix}",
+            f"inference.num_designs=1",  # One design per iteration
+            contig_arg,
+            hotspot_arg
+        ]
         
         try:
+            # Set working directory and environment for RFdiffusion
+            cwd = None
+            env = os.environ.copy()
+            
+            # DGL with CUDA 11.6 support (dgl-cuda11.6) is installed, so graphs will use GPU
+            # No patching needed - DGL will automatically use CUDA when tensors are on GPU
+            
+            # Add conda lib directory to LD_LIBRARY_PATH for DGL to find CUDA libraries
+            conda_prefix = os.environ.get("CONDA_PREFIX", "")
+            if conda_prefix:
+                lib_path = os.path.join(conda_prefix, "lib")
+                current_ld_path = env.get("LD_LIBRARY_PATH", "")
+                if current_ld_path:
+                    env["LD_LIBRARY_PATH"] = f"{lib_path}:{current_ld_path}"
+                else:
+                    env["LD_LIBRARY_PATH"] = lib_path
+            
+            # Note: PyTorch 2.1.0 + CUDA 11.8 is installed and working
+            # DGL is forced to CPU mode to avoid CUDA compatibility issues
+            # PyTorch will still use GPU for most operations
+            
+            # Set working directory to RFdiffusion root (required for RFdiffusion)
+            if is_python_script:
+                script_dir = os.path.dirname(os.path.abspath(script_path))
+                # RFdiffusion root is typically the parent of scripts/ directory
+                rfdiffusion_root = os.path.dirname(script_dir)  # Go up from scripts/ to RFdiffusion/
+                
+                if os.path.exists(rfdiffusion_root) and os.path.basename(rfdiffusion_root) in ["RFdiffusion", "rfdiffusion"]:
+                    # Set working directory to RFdiffusion root
+                    cwd = rfdiffusion_root
+                    
+                    # Add RFdiffusion directory to PYTHONPATH so 'rfdiffusion' module can be found
+                    current_pythonpath = env.get("PYTHONPATH", "")
+                    if current_pythonpath:
+                        env["PYTHONPATH"] = f"{rfdiffusion_root}:{current_pythonpath}"
+                    else:
+                        env["PYTHONPATH"] = rfdiffusion_root
+                else:
+                    # Fallback: use script directory
+                    cwd = script_dir
+            
+            # Use the current Python environment (ExoGPT) - no need for conda run
+            # RFdiffusion and dependencies are installed in the same environment as the GUI
+            
             result = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
                 timeout=3600,  # 1 hour timeout
-                check=False
+                check=False,
+                cwd=cwd,
+                env=env,
+                shell=False  # Explicitly set to False to avoid shell interpretation
             )
             
-            if result.returncode == 0 and os.path.exists(output_pdb):
-                generated_files.append(output_pdb)
+            # RFdiffusion outputs files with pattern: {output_prefix}_*.pdb
+            # Find the generated PDB file
+            output_files = []
+            if result.returncode == 0:
+                # Look for generated PDB files
+                import glob
+                pattern = os.path.join(output_dir, f"backbone_{i}_*.pdb")
+                output_files = glob.glob(pattern)
+                if not output_files:
+                    # Try alternative pattern
+                    pattern = os.path.join(output_dir, f"*{i}*.pdb")
+                    output_files = glob.glob(pattern)
+                
+                if output_files:
+                    generated_files.extend(output_files)
+                else:
+                    # Check if output_pdb exists (fallback)
+                    if os.path.exists(output_pdb):
+                        generated_files.append(output_pdb)
             else:
-                error_msg = f"RFdiffusion failed for backbone {i}: {result.stderr}"
+                # Include both stdout and stderr in error message for debugging
+                error_details = []
+                if result.stdout:
+                    # Show last 1000 chars of stdout (most recent messages)
+                    stdout_msg = result.stdout[-1000:] if len(result.stdout) > 1000 else result.stdout
+                    error_details.append(f"stdout (last 1000 chars): {stdout_msg}")
+                if result.stderr:
+                    # Show full stderr to see complete traceback
+                    stderr_msg = result.stderr
+                    error_details.append(f"stderr: {stderr_msg}")
+                    
+                    # Check for common dependency errors and provide helpful suggestions
+                    if "ModuleNotFoundError" in stderr_msg or "No module named" in stderr_msg:
+                        # Extract the missing module name from the error
+                        missing_module = None
+                        if "No module named '" in stderr_msg:
+                            try:
+                                missing_module = stderr_msg.split("No module named '")[1].split("'")[0]
+                            except:
+                                pass
+                        elif "No module named " in stderr_msg:
+                            try:
+                                missing_module = stderr_msg.split("No module named ")[1].split()[0].strip()
+                            except:
+                                pass
+                        
+                        if missing_module:
+                            if missing_module == "torch":
+                                error_details.append(f"SUGGESTION: Missing module '{missing_module}'. Install with: pip install torch")
+                            elif missing_module in ["omegaconf", "hydra"]:
+                                error_details.append(f"SUGGESTION: Missing module '{missing_module}'. Install with: pip install omegaconf hydra-core")
+                            elif missing_module == "rfdiffusion":
+                                error_details.append(f"SUGGESTION: Missing module '{missing_module}'. Install with: cd RFdiffusion && pip install -e . --no-deps")
+                                error_details.append("NOTE: RFdiffusion should be installed in the ExoGPT environment. See INSTALL_RFDIFFUSION.md for setup instructions.")
+                            elif missing_module == "pyrsistent":
+                                error_details.append(f"SUGGESTION: Missing module '{missing_module}'. Install with: pip install pyrsistent")
+                            elif missing_module in ["dgl", "e3nn", "wandb"]:
+                                error_details.append(f"SUGGESTION: Missing module '{missing_module}'. Install with: pip install {missing_module}")
+                            else:
+                                error_details.append(f"SUGGESTION: Missing module '{missing_module}'. Install with: pip install {missing_module}")
+                                error_details.append("NOTE: If this is an RFdiffusion dependency, see INSTALL_RFDIFFUSION.md for complete setup instructions.")
+                        else:
+                            # Fallback: check for common patterns
+                            if "torch" in stderr_msg.lower():
+                                error_details.append("SUGGESTION: RFdiffusion requires PyTorch. Install with: pip install torch")
+                            elif "omegaconf" in stderr_msg.lower() or "hydra" in stderr_msg.lower():
+                                error_details.append("SUGGESTION: Install with: pip install omegaconf hydra-core")
+                            elif "rfdiffusion" in stderr_msg.lower():
+                                error_details.append("SUGGESTION: RFdiffusion module not found. Install with: cd RFdiffusion && pip install -e . --no-deps")
+                            else:
+                                error_details.append("SUGGESTION: RFdiffusion requires dependencies in the ExoGPT environment.")
+                                error_details.append("Setup: pip install omegaconf hydra-core e3nn wandb dgl<2.0 pyrsistent")
+                                error_details.append("Then: cd RFdiffusion/env/SE3Transformer && pip install -e . && cd ../.. && pip install -e . --no-deps")
+                                error_details.append("See INSTALL_RFDIFFUSION.md for complete installation instructions.")
+                if not error_details:
+                    error_details.append(f"Return code: {result.returncode}")
+                
+                error_msg = f"RFdiffusion: Failed to generate backbone {i}/{config.num_backbones} for {config.target_name} / {config.epitope_id}: {'; '.join(error_details)}"
                 errors.append(error_msg)
                 if progress_callback:
                     progress_callback(error_msg, (i / config.num_backbones) * 100)
         except subprocess.TimeoutExpired:
-            errors.append(f"RFdiffusion timed out for backbone {i}")
+            error_msg = f"RFdiffusion: Timed out generating backbone {i}/{config.num_backbones} for {config.target_name} / {config.epitope_id}"
+            errors.append(error_msg)
+            if progress_callback:
+                progress_callback(error_msg, (i / config.num_backbones) * 100)
         except Exception as e:
-            errors.append(f"RFdiffusion error for backbone {i}: {str(e)}")
+            error_msg = f"RFdiffusion: Error generating backbone {i}/{config.num_backbones} for {config.target_name} / {config.epitope_id}: {str(e)}"
+            errors.append(error_msg)
+            if progress_callback:
+                progress_callback(error_msg, (i / config.num_backbones) * 100)
     
     if progress_callback:
-        progress_callback(f"RFdiffusion completed: {len(generated_files)}/{config.num_backbones} backbones", 100.0)
+        progress_callback(f"RFdiffusion: Completed {len(generated_files)}/{config.num_backbones} backbones for {config.target_name} / {config.epitope_id}", 100.0)
     
-    return {
+    result = {
         "success": len(generated_files) > 0,
         "generated_files": generated_files,
         "errors": errors,
         "output_dir": output_dir
     }
+    
+    # If failed, add helpful message about dependencies
+    if not result["success"] and errors:
+        # Check if it's a dependency issue
+        dependency_errors = [e for e in errors if "ModuleNotFoundError" in e or "No module named" in e]
+        if dependency_errors:
+            result["error_summary"] = (
+                f"RFdiffusion failed due to missing dependencies. "
+                f"Install required packages: pip install torch omegaconf hydra-core. "
+                f"Or use the generated scripts after setting up RFdiffusion environment. "
+                f"See RFdiffusion/README.md for full installation instructions."
+            )
+        else:
+            result["error_summary"] = f"RFdiffusion failed: {len(errors)} error(s). First error: {errors[0][:200]}"
+    
+    return result
 
 
 def execute_proteinmpnn(
@@ -914,8 +1333,9 @@ def execute_proteinmpnn(
     os.makedirs(output_dir, exist_ok=True)
     
     # Find RFdiffusion output files
+    # RFdiffusion generates files with pattern: backbone_*.pdb (e.g., backbone_1_0.pdb, backbone_2_0.pdb)
     import glob
-    complex_pdbs = glob.glob(os.path.join(rfdiffusion_output_dir, "complex_*.pdb"))
+    complex_pdbs = glob.glob(os.path.join(rfdiffusion_output_dir, "backbone_*.pdb"))
     
     if not complex_pdbs:
         return {
@@ -924,8 +1344,20 @@ def execute_proteinmpnn(
             "generated_files": []
         }
     
+    # Extract target name from config if available (passed through complex_pdbs path structure)
+    target_info = "target"
+    if complex_pdbs:
+        # Try to extract target/epitope from path: .../designs/TARGET/EPITOPE/...
+        path_parts = complex_pdbs[0].split(os.sep)
+        if "designs" in path_parts:
+            designs_idx = path_parts.index("designs")
+            if designs_idx + 1 < len(path_parts):
+                target_info = path_parts[designs_idx + 1]
+            if designs_idx + 2 < len(path_parts):
+                target_info += f" / {path_parts[designs_idx + 2]}"
+    
     if progress_callback:
-        progress_callback(f"Starting ProteinMPNN for {len(complex_pdbs)} backbones", 0.0)
+        progress_callback(f"ProteinMPNN: Now processing target {target_info} ({len(complex_pdbs)} backbones)", 0.0)
     
     generated_files = []
     errors = []
@@ -937,7 +1369,7 @@ def execute_proteinmpnn(
         
         if progress_callback:
             progress = ((idx + 1) / len(complex_pdbs)) * 100
-            progress_callback(f"Designing sequences for {base_name} ({idx+1}/{len(complex_pdbs)})", progress)
+            progress_callback(f"ProteinMPNN: Designing sequences for backbone {idx+1}/{len(complex_pdbs)} of {target_info}", progress)
         
         # Build command
         cmd_parts = proteinmpnn_cmd.split()
@@ -981,7 +1413,7 @@ def execute_proteinmpnn(
             errors.append(f"ProteinMPNN error for {base_name}: {str(e)}")
     
     if progress_callback:
-        progress_callback(f"ProteinMPNN completed: {len(generated_files)}/{len(complex_pdbs)} files", 100.0)
+        progress_callback(f"ProteinMPNN: Completed {len(generated_files)}/{len(complex_pdbs)} sequence files for {target_info}", 100.0)
     
     return {
         "success": len(generated_files) > 0,
@@ -1045,8 +1477,20 @@ def execute_colabfold(
             "generated_files": []
         }
     
+    # Extract target name from config if available (passed through seq_files path structure)
+    target_info = "target"
+    if seq_files:
+        # Try to extract target/epitope from path: .../designs/TARGET/EPITOPE/...
+        path_parts = seq_files[0].split(os.sep)
+        if "designs" in path_parts:
+            designs_idx = path_parts.index("designs")
+            if designs_idx + 1 < len(path_parts):
+                target_info = path_parts[designs_idx + 1]
+            if designs_idx + 2 < len(path_parts):
+                target_info += f" / {path_parts[designs_idx + 2]}"
+    
     if progress_callback:
-        progress_callback(f"Starting ColabFold for {len(seq_files)} sequence files", 0.0)
+        progress_callback(f"ColabFold: Now processing target {target_info} ({len(seq_files)} sequences)", 0.0)
     
     generated_files = []
     errors = []
@@ -1058,7 +1502,7 @@ def execute_colabfold(
         
         if progress_callback:
             progress = ((idx + 1) / len(seq_files)) * 100
-            progress_callback(f"Predicting structures for {base_name} ({idx+1}/{len(seq_files)})", progress)
+            progress_callback(f"ColabFold: Predicting structure for sequence {idx+1}/{len(seq_files)} of {target_info}", progress)
         
         # Read sequences and create batch FASTA
         batch_fasta = os.path.join(design_output_dir, f"{base_name}_batch.fasta")
@@ -1127,7 +1571,7 @@ def execute_colabfold(
             errors.append(f"ColabFold error for {base_name}: {str(e)}")
     
     if progress_callback:
-        progress_callback(f"ColabFold completed: {len(generated_files)} structures predicted", 100.0)
+        progress_callback(f"ColabFold: Completed {len(generated_files)} structure predictions for {target_info}", 100.0)
     
     return {
         "success": len(generated_files) > 0,
@@ -1292,7 +1736,7 @@ def generate_design_plan(
             # Step 1: Execute RFdiffusion
             if tool_status.get("rfdiffusion", {}).get("available"):
                 if progress_callback:
-                    progress_callback(f"Executing RFdiffusion for {config.target_name} / {config.epitope_id}...", 10.0)
+                    progress_callback(f"RFdiffusion: Starting execution for {config.target_name} / {config.epitope_id}...", 10.0)
                 rf_result = execute_rfdiffusion(
                     config,
                     tool_status["rfdiffusion"]["command"],
@@ -1310,7 +1754,7 @@ def generate_design_plan(
                 rf_output_dir = execution_results[design_key].get("rfdiffusion", {}).get("output_dir")
                 if rf_output_dir and execution_results[design_key].get("rfdiffusion", {}).get("success"):
                     if progress_callback:
-                        progress_callback(f"Executing ProteinMPNN for {config.target_name} / {config.epitope_id}...", 50.0)
+                        progress_callback(f"ProteinMPNN: Starting execution for {config.target_name} / {config.epitope_id}...", 50.0)
                     mpnn_result = execute_proteinmpnn(
                         config,
                         tool_status["proteinmpnn"]["command"],
@@ -1336,7 +1780,7 @@ def generate_design_plan(
                     mpnn_output_dir = execution_results[design_key].get("proteinmpnn", {}).get("output_dir")
                     if mpnn_output_dir and execution_results[design_key].get("proteinmpnn", {}).get("success"):
                         if progress_callback:
-                            progress_callback(f"Executing ColabFold for {config.target_name} / {config.epitope_id}...", 80.0)
+                            progress_callback(f"ColabFold: Starting execution for {config.target_name} / {config.epitope_id}...", 80.0)
                         cf_result = execute_colabfold(
                             config,
                             tool_status["colabfold"]["command"],

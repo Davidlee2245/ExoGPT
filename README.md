@@ -28,10 +28,12 @@ cd ExoGPT
 
 2. Set up Python environment:
 ```bash
-conda create -n ExoGPT python=3.10
+conda create -n ExoGPT python=3.11
 conda activate ExoGPT
 pip install -r requirements.txt
 ```
+
+**Important**: For RFdiffusion GPU support, see [SETUP.md](SETUP.md) for complete installation instructions including PyTorch 2.1.0 with CUDA 11.8.
 
 3. Set up frontend:
 ```bash
@@ -89,9 +91,10 @@ If data is not found locally, the system automatically downloads datasets from E
 
 ## Documentation
 
-- [Quick Start Guide](QUICK_START_GUI.md)
-- [Data System Documentation](DATA_SYSTEM.md)
-- [Auto-Download Feature](AUTO_DOWNLOAD_FEATURE.md)
+- **[Setup Guide](SETUP.md)** - Complete installation instructions for ExoGPT environment with RFdiffusion, PyTorch 2.1.0 + CUDA 11.8, and all dependencies
+- [Quick Start Guide](QUICK_START_GUI.md) - GUI usage instructions
+- [Data System Documentation](DATA_SYSTEM.md) - EV biomarker data system
+- [Auto-Download Feature](AUTO_DOWNLOAD_FEATURE.md) - Automatic data download feature
 
 ## License
 

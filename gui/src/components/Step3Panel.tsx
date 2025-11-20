@@ -1,12 +1,5 @@
 import React, { useState } from "react";
 
-interface Step2Result {
-  disease: string;
-  biofluid: string;
-  curated_targets: any[];
-  num_targets: number;
-}
-
 export const Step3Panel: React.FC = () => {
   const [step2JsonPath, setStep2JsonPath] = useState("./epitopes/mm_plasma_epitopes.json");
   const [outputBaseDir, setOutputBaseDir] = useState("./workflows");
@@ -24,9 +17,16 @@ export const Step3Panel: React.FC = () => {
   const [progressMessages, setProgressMessages] = useState<Array<{message: string, percent: number}>>([]);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [fileContents, setFileContents] = useState<string | null>(null);
-  const [fileType, setFileType] = useState<string>("text");
   const [fileName, setFileName] = useState<string>("");
   const [loadingFile, setLoadingFile] = useState(false);
+  const progressRef = React.useRef<HTMLDivElement>(null);
+
+  // Auto-scroll progress to bottom when new messages arrive
+  React.useEffect(() => {
+    if (progressRef.current) {
+      progressRef.current.scrollTop = progressRef.current.scrollHeight;
+    }
+  }, [progressMessages]);
 
   const handleRun = async () => {
     setLoading(true);
@@ -53,24 +53,156 @@ export const Step3Panel: React.FC = () => {
         requestBody.step2_json_path = step2JsonPath;
       }
 
-      const response = await fetch("http://localhost:5000/api/step3/run", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(requestBody),
-      });
+      // Use SSE streaming for real-time progress when execute is true
+      if (execute) {
+        // Use fetch with streaming for Server-Sent Events
+        let response: Response;
+        try {
+          response = await fetch("http://localhost:5000/api/step3/stream", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(requestBody),
+          });
+        } catch (fetchError) {
+          console.error("Fetch error:", fetchError);
+          // Fallback to regular endpoint if streaming fails
+          console.warn("Streaming endpoint failed, falling back to regular endpoint");
+          // Continue to the else block below by setting execute to false temporarily
+          // Actually, let's just throw a more helpful error and suggest using non-execute mode
+          throw new Error(
+            `Failed to connect to streaming endpoint: ${fetchError instanceof Error ? fetchError.message : "Unknown error"}. ` +
+            `Make sure the backend is running on http://localhost:5000. ` +
+            `You can try unchecking "Execute Tools" to use the regular endpoint.`
+          );
+        }
 
-      const data = await response.json();
+        if (!response.ok) {
+          let errorData: any;
+          try {
+            // Try to parse as JSON first (for immediate errors)
+            const contentType = response.headers.get("content-type");
+            if (contentType && contentType.includes("application/json")) {
+              errorData = await response.json();
+            } else {
+              const text = await response.text();
+              errorData = { error: text || `Server returned status ${response.status}: ${response.statusText}` };
+            }
+          } catch (parseError) {
+            errorData = { error: `Server returned status ${response.status}: ${response.statusText}` };
+          }
+          throw new Error(errorData.error || "Failed to start Step 3");
+        }
 
-      if (!response.ok || !data.success) {
-        throw new Error(data.error || "Failed to run Step 3");
+        // Check if response is actually a stream
+        const contentType = response.headers.get("content-type");
+        if (!contentType || !contentType.includes("text/event-stream")) {
+          // Not a stream, try to parse as JSON
+          try {
+            const data = await response.json();
+            if (data.error) {
+              throw new Error(data.error);
+            }
+            setPlan(data.plan);
+            return;
+          } catch (jsonError) {
+            throw new Error("Unexpected response format from server");
+          }
+        }
+
+        // Read the stream
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+
+        if (!reader) {
+          throw new Error("Failed to get response stream");
+        }
+
+        let buffer = '';
+        let resultReceived = false;
+        
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || ''; // Keep incomplete line in buffer
+
+            for (const line of lines) {
+              if (line.trim() === '' || line.startsWith(':')) {
+                // Skip empty lines and comments (keepalive)
+                continue;
+              }
+              
+              if (line.startsWith('data: ')) {
+                try {
+                  const data = JSON.parse(line.slice(6)); // Remove 'data: ' prefix
+                  
+                  if (data.type === 'progress') {
+                    // Add progress message in real-time
+                    setProgressMessages(prev => [...prev, {
+                      message: data.message,
+                      percent: data.percent
+                    }]);
+                  } else if (data.type === 'result') {
+                    // Final result received
+                    setPlan(data.plan);
+                    resultReceived = true;
+                  } else if (data.type === 'error') {
+                    // Error received
+                    const errorMsg = data.error?.message || data.error || "Unknown error occurred";
+                    setError(errorMsg);
+                    throw new Error(errorMsg);
+                  }
+                } catch (err) {
+                  if (err instanceof Error && err.message !== "Unknown error occurred") {
+                    throw err;
+                  }
+                  console.error('Error parsing SSE data:', err);
+                }
+              }
+            }
+          }
+          
+          if (!resultReceived) {
+            throw new Error("Stream ended without result");
+          }
+        } finally {
+          reader.releaseLock();
+        }
+      } else {
+        // Non-execute mode: use regular API endpoint
+        const response = await fetch("http://localhost:5000/api/step3/run", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(requestBody),
+        });
+
+        const data = await response.json();
+
+        if (!response.ok || !data.success) {
+          throw new Error(data.error || "Failed to run Step 3");
+        }
+
+        setPlan(data.plan);
+        // Update progress messages - they come all at once but we display them
+        if (data.progress && data.progress.length > 0) {
+          setProgressMessages(data.progress);
+        }
       }
-
-      setPlan(data.plan);
-      setProgressMessages(data.progress || []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unknown error occurred");
+      console.error("Step 3 error:", err);
+      const errorMessage = err instanceof Error ? err.message : "Unknown error occurred";
+      setError(errorMessage);
+      // Also log to console for debugging
+      if (err instanceof TypeError && err.message.includes("fetch")) {
+        console.error("Network error - check if backend is running on http://localhost:5000");
+      }
     } finally {
       setLoading(false);
     }
@@ -115,7 +247,6 @@ export const Step3Panel: React.FC = () => {
       }
 
       setFileContents(data.contents);
-      setFileType(data.file_type || "text");
       setFileName(data.file_name || filePath);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load file");
@@ -281,15 +412,39 @@ export const Step3Panel: React.FC = () => {
           <div className="progress-section" style={{ 
             marginTop: "20px", 
             padding: "15px", 
-            backgroundColor: "#f0f7ff", 
+            backgroundColor: "#1e1e1e", 
             borderRadius: "4px",
-            border: "1px solid #b3d9ff"
+            border: "1px solid #444",
+            color: "#e0e0e0"
           }}>
-            <h4>Execution Progress</h4>
-            <div style={{ maxHeight: "200px", overflowY: "auto" }}>
+            <h4 style={{ color: "#fff", marginBottom: "10px" }}>Execution Progress</h4>
+            <div 
+              ref={progressRef}
+              style={{ 
+                maxHeight: "400px", 
+                overflowY: "auto",
+                fontFamily: "monospace",
+                fontSize: "0.85em",
+                lineHeight: "1.6"
+              }}
+            >
               {progressMessages.map((msg, idx) => (
-                <div key={idx} style={{ marginBottom: "5px", fontSize: "0.9em" }}>
-                  <strong>[{msg.percent.toFixed(1)}%]</strong> {msg.message}
+                <div 
+                  key={idx} 
+                  style={{ 
+                    marginBottom: "3px", 
+                    padding: "2px 0",
+                    color: msg.message.toLowerCase().includes("failed") || msg.message.toLowerCase().includes("error") 
+                      ? "#ff6b6b" 
+                      : msg.message.toLowerCase().includes("success") || msg.message.toLowerCase().includes("completed")
+                      ? "#51cf66"
+                      : "#e0e0e0"
+                  }}
+                >
+                  <span style={{ color: "#4dabf7", fontWeight: "bold" }}>
+                    [{msg.percent.toFixed(1)}%]
+                  </span>{" "}
+                  <span>{msg.message}</span>
                 </div>
               ))}
             </div>
