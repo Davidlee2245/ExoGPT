@@ -127,6 +127,21 @@ export const Step1Panel: React.FC = () => {
       setResult(data.result);
       setMarkdownTable(data.markdown_table || null);
       
+      // Save results to localStorage for Step 2 to use
+      try {
+        localStorage.setItem('step1_result', JSON.stringify(data.result));
+        localStorage.setItem('step1_disease', disease);
+        localStorage.setItem('step1_biofluid', biofluid);
+        // Also save the JSON path if available
+        if (data.saved_json_path) {
+          // Store relative path for display
+          const relativePath = data.saved_json_path.replace(/^.*\/scores\//, './scores/');
+          localStorage.setItem('step1_json_path', relativePath);
+        }
+      } catch (e) {
+        console.warn('Failed to save Step 1 results to localStorage:', e);
+      }
+      
       // Show download info if files were downloaded
       if (data.downloaded_files && data.downloaded_files.length > 0) {
         setDownloadProgress(prev => [
