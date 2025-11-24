@@ -11,6 +11,8 @@ interface Biomarker {
   min_fdr?: number;
   evidence_level: string;
   score: number;
+  z_score_pathology?: number;
+  z_score_normal?: number;
 }
 
 interface Step1Result {
@@ -22,12 +24,52 @@ interface Step1Result {
   };
   ev_biomarkers: Biomarker[];
   data_sources?: string[];
+  pipeline_mode?: string;
+  pipeline_stage?: string;
+  fallback_reason?: string;
+  hpa_diagnostic?: {
+    search_term?: string;
+    error_messages?: string[];
+    json_path?: string;
+    csv_path?: string;
+    converted_path?: string;
+  };
 }
 
 interface DownloadProgress {
   message: string;
   percent: number;
 }
+
+// Valid HPA API cancer search terms (categorized)
+// Using HPA's exact terminology as required by their API
+const HPA_CANCER_TYPES = {
+  "Common Cancers": [
+    "Colorectal cancer",
+    "Breast cancer",
+    "Lung cancer",
+    "Prostate cancer",
+    "Skin Cutaneous Melanoma",  // HPA exact term for melanoma
+    "Pancreatic cancer",
+    "Gastric cancer",
+    "Liver cancer",
+    "Ovarian cancer",
+  ],
+  "Other Cancers": [
+    "Cervical cancer",
+    "Endometrial cancer",
+    "Renal cancer",
+    "Bladder cancer",
+    "Thyroid cancer",
+    "Brain cancer",
+  ],
+};
+
+// Flatten for autocomplete
+const ALL_HPA_CANCER_TYPES = [
+  ...HPA_CANCER_TYPES["Common Cancers"],
+  ...HPA_CANCER_TYPES["Other Cancers"],
+];
 
 export const Step1Panel: React.FC = () => {
   const [disease, setDisease] = useState("Metastatic melanoma");
@@ -39,6 +81,7 @@ export const Step1Panel: React.FC = () => {
   const [result, setResult] = useState<Step1Result | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [markdownTable, setMarkdownTable] = useState<string | null>(null);
+  const [showHpaSuggestions, setShowHpaSuggestions] = useState(false);
 
   const handleRun = async () => {
     setLoading(true);
@@ -182,13 +225,95 @@ export const Step1Panel: React.FC = () => {
           <div className="panel-card">
             <h3>Inputs</h3>
             <label className="field">
-              <span className="field-label">Disease</span>
-              <input 
-                value={disease} 
-                onChange={(e) => setDisease(e.target.value)}
-                disabled={loading}
-                placeholder="e.g., Metastatic melanoma"
-              />
+              <span className="field-label">
+                Disease
+                <span style={{ marginLeft: "8px", fontSize: "0.85em", color: "#64748b", fontWeight: "normal" }}>
+                  (HPA-compatible terms available)
+                </span>
+              </span>
+              <div style={{ position: "relative" }}>
+                <input 
+                  value={disease} 
+                  onChange={(e) => {
+                    setDisease(e.target.value);
+                    setShowHpaSuggestions(e.target.value.length > 0);
+                  }}
+                  onFocus={() => setShowHpaSuggestions(true)}
+                  onBlur={() => {
+                    // Delay hiding to allow click on suggestion
+                    setTimeout(() => setShowHpaSuggestions(false), 200);
+                  }}
+                  disabled={loading}
+                  placeholder="e.g., Metastatic melanoma or select from HPA types"
+                  style={{ width: "100%" }}
+                />
+                {showHpaSuggestions && (
+                  <div style={{
+                    position: "absolute",
+                    top: "100%",
+                    left: 0,
+                    right: 0,
+                    zIndex: 1000,
+                    backgroundColor: "var(--bg-panel)",
+                    border: "1px solid var(--border-subtle)",
+                    borderRadius: "0.5rem",
+                    marginTop: "4px",
+                    maxHeight: "300px",
+                    overflowY: "auto",
+                    boxShadow: "0 4px 6px rgba(0, 0, 0, 0.1)",
+                  }}>
+                    <div style={{ padding: "8px 12px", fontSize: "0.75rem", color: "#64748b", fontWeight: "bold", borderBottom: "1px solid var(--border-subtle)" }}>
+                      HPA API Compatible Cancer Types:
+                    </div>
+                    {Object.entries(HPA_CANCER_TYPES).map(([category, types]) => (
+                      <div key={category}>
+                        <div style={{ padding: "6px 12px", fontSize: "0.75rem", color: "#94a3b8", fontWeight: "600", backgroundColor: "rgba(148, 163, 184, 0.1)" }}>
+                          {category}
+                        </div>
+                        {types
+                          .filter(type => 
+                            disease.length === 0 || 
+                            type.toLowerCase().includes(disease.toLowerCase())
+                          )
+                          .map((type) => (
+                            <div
+                              key={type}
+                              onClick={() => {
+                                setDisease(type);
+                                setShowHpaSuggestions(false);
+                              }}
+                              style={{
+                                padding: "8px 16px",
+                                cursor: "pointer",
+                                fontSize: "0.85rem",
+                                borderBottom: "1px solid rgba(148, 163, 184, 0.1)",
+                              }}
+                              onMouseEnter={(e) => {
+                                e.currentTarget.style.backgroundColor = "rgba(56, 189, 248, 0.1)";
+                              }}
+                              onMouseLeave={(e) => {
+                                e.currentTarget.style.backgroundColor = "transparent";
+                              }}
+                            >
+                              {type}
+                            </div>
+                          ))}
+                      </div>
+                    ))}
+                    {disease.length > 0 && 
+                     !ALL_HPA_CANCER_TYPES.some(type => 
+                       type.toLowerCase().includes(disease.toLowerCase())
+                     ) && (
+                      <div style={{ padding: "8px 12px", fontSize: "0.8rem", color: "#fbbf24", fontStyle: "italic" }}>
+                        ⚠️ "{disease}" may not be HPA-compatible. Try selecting from suggestions above.
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+              <p className="field-help" style={{ marginTop: "4px", fontSize: "0.8em" }}>
+                💡 Tip: Select from HPA-compatible types above for automatic HPA pipeline, or type any disease name to use legacy pipeline.
+              </p>
             </label>
             <label className="field">
               <span className="field-label">Biofluid</span>
@@ -255,6 +380,76 @@ export const Step1Panel: React.FC = () => {
                   {result.normalized_disease_ids.mesh && ` | MeSH: ${result.normalized_disease_ids.mesh}`}
                 </p>
               )}
+              {/* Pipeline Mode Display */}
+              {result.pipeline_mode && (
+                <div style={{ 
+                  margin: "12px 0", 
+                  padding: "10px 14px", 
+                  borderRadius: "6px",
+                  backgroundColor: result.pipeline_mode === "legacy" || result.pipeline_mode === "legacy_fallback" 
+                    ? "#fff3cd" 
+                    : "#d1ecf1",
+                  border: `2px solid ${result.pipeline_mode === "legacy" || result.pipeline_mode === "legacy_fallback" 
+                    ? "#ffc107" 
+                    : "#0dcaf0"}`,
+                  display: "block"
+                }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                    <strong style={{ fontSize: "1em" }}>Pipeline Mode: </strong>
+                    <span style={{ 
+                      fontWeight: "bold",
+                      fontSize: "1.05em",
+                      color: result.pipeline_mode === "legacy" || result.pipeline_mode === "legacy_fallback" 
+                        ? "#856404" 
+                        : "#0c5460",
+                      textTransform: "uppercase",
+                      letterSpacing: "0.5px"
+                    }}>
+                      {result.pipeline_mode === "legacy" || result.pipeline_mode === "legacy_fallback" 
+                        ? "🔍 Legacy Pipeline" 
+                        : result.pipeline_mode === "hpa" || result.pipeline_stage === "complete"
+                        ? "🧬 HPA Pipeline"
+                        : result.pipeline_mode}
+                    </span>
+                  </div>
+                  {result.pipeline_mode === "legacy_fallback" && result.fallback_reason && (
+                    <div style={{ margin: "6px 0 0 0", fontSize: "0.9em", color: "#856404", fontStyle: "italic" }}>
+                      ℹ️ {result.fallback_reason}
+                    </div>
+                  )}
+                  {result.hpa_diagnostic && (
+                    <details style={{ margin: "8px 0 0 0", fontSize: "0.85em" }}>
+                      <summary style={{ cursor: "pointer", color: "#856404", fontWeight: "bold" }}>
+                        🔍 Show HPA Diagnostic Details
+                      </summary>
+                      <div style={{ marginTop: "8px", padding: "8px", backgroundColor: "#fff9e6", borderRadius: "4px", fontFamily: "monospace", fontSize: "0.8em" }}>
+                        {result.hpa_diagnostic.search_term && (
+                          <div><strong>Search Term:</strong> {result.hpa_diagnostic.search_term}</div>
+                        )}
+                        {result.hpa_diagnostic.json_path && (
+                          <div><strong>JSON Path:</strong> {result.hpa_diagnostic.json_path}</div>
+                        )}
+                        {result.hpa_diagnostic.csv_path && (
+                          <div><strong>CSV Path:</strong> {result.hpa_diagnostic.csv_path}</div>
+                        )}
+                        {result.hpa_diagnostic.converted_path && (
+                          <div><strong>Converted Path:</strong> {result.hpa_diagnostic.converted_path}</div>
+                        )}
+                        {result.hpa_diagnostic.error_messages && result.hpa_diagnostic.error_messages.length > 0 && (
+                          <div style={{ marginTop: "8px" }}>
+                            <strong>Error Messages:</strong>
+                            <ul style={{ margin: "4px 0", paddingLeft: "20px" }}>
+                              {result.hpa_diagnostic.error_messages.map((msg, idx) => (
+                                <li key={idx} style={{ margin: "2px 0" }}>{msg}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                      </div>
+                    </details>
+                  )}
+                </div>
+              )}
               <p>
                 <strong>Found {result.ev_biomarkers.length} biomarkers</strong>
                 {result.data_sources && result.data_sources.length > 0 && (
@@ -278,10 +473,12 @@ export const Step1Panel: React.FC = () => {
                       <th>Gene Symbol</th>
                       <th>UniProt</th>
                       <th>Type</th>
-                      <th>Surface Likelihood</th>
+                      <th>Surface Status</th>
                       <th>Studies</th>
                       <th>Mean logFC</th>
                       <th>Min p-value</th>
+                      <th>Z-score (Pathology)</th>
+                      <th>Z-score (Normal)</th>
                       <th>Evidence</th>
                       <th>Score</th>
                     </tr>
@@ -295,7 +492,16 @@ export const Step1Panel: React.FC = () => {
                         <td>{bm.analyte_type}</td>
                         <td>
                           {bm.surface_likelihood !== null && bm.surface_likelihood !== undefined
-                            ? bm.surface_likelihood.toFixed(2)
+                            ? (() => {
+                                // Display text labels instead of numeric values
+                                if (Math.abs(bm.surface_likelihood - 0.8) < 0.01) {
+                                  return "Transmembrane";
+                                } else if (Math.abs(bm.surface_likelihood - 0.5) < 0.01) {
+                                  return "EVpedia";
+                                } else {
+                                  return "—";
+                                }
+                              })()
                             : "—"}
                         </td>
                         <td>{bm.num_studies}</td>
@@ -307,6 +513,16 @@ export const Step1Panel: React.FC = () => {
                         <td>
                           {bm.min_p_value !== null && bm.min_p_value !== undefined
                             ? bm.min_p_value.toExponential(2)
+                            : "—"}
+                        </td>
+                        <td>
+                          {bm.z_score_pathology !== null && bm.z_score_pathology !== undefined
+                            ? bm.z_score_pathology.toFixed(2)
+                            : "—"}
+                        </td>
+                        <td>
+                          {bm.z_score_normal !== null && bm.z_score_normal !== undefined
+                            ? bm.z_score_normal.toFixed(2)
                             : "—"}
                         </td>
                         <td>

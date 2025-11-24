@@ -97,6 +97,54 @@ body {
   margin-top: 2px;
 }
 
+.sidebar-subnav {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-left: 16px;
+  margin-top: 4px;
+  margin-bottom: 4px;
+  padding-left: 12px;
+  border-left: 2px solid var(--border-subtle);
+}
+
+.sidebar-subitem {
+  text-align: left;
+  border-radius: 0.5rem;
+  padding: 8px 10px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: all 0.17s ease-out;
+  font-size: 0.85rem;
+}
+
+.sidebar-subitem:hover {
+  background: rgba(15, 23, 42, 0.7);
+  border-color: rgba(148, 163, 184, 0.2);
+  color: var(--text);
+}
+
+.sidebar-subitem.active {
+  background: rgba(56, 189, 248, 0.15);
+  border-color: rgba(56, 189, 248, 0.4);
+  color: var(--text);
+}
+
+.sidebar-subitem-label {
+  font-size: 0.85rem;
+  font-weight: 500;
+  display: block;
+}
+
+.sidebar-subitem-desc {
+  font-size: 0.72rem;
+  display: block;
+  margin-top: 2px;
+  opacity: 0.8;
+}
+
 .sidebar-footer {
   margin-top: auto;
   padding: 10px 11px;

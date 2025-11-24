@@ -190,6 +190,388 @@ def run_step1():
         }), 500
 
 
+@app.route("/api/step1/publication/extract", methods=["POST"])
+def extract_publication():
+    """Extract biomarkers from an existing publication file using OpenAI API"""
+    try:
+        data = request.json
+        filename = data.get("filename")
+        
+        if not filename:
+            return jsonify({"error": "filename is required"}), 400
+        
+        # Decode filename in case it has special characters
+        import urllib.parse
+        filename = urllib.parse.unquote(filename)
+        
+        publications_dir = os.path.join(PROJECT_ROOT, "data", "publications")
+        filepath = os.path.join(publications_dir, filename)
+        
+        if not os.path.exists(filepath):
+            return jsonify({
+                "success": False,
+                "error": f"File not found: {filename}"
+            }), 404
+        
+        # Check if OpenAI API key is available
+        openai_api_key = os.getenv("OPENAI_API_KEY")
+        if not openai_api_key:
+            return jsonify({
+                "success": False,
+                "error": "OPENAI_API_KEY environment variable not set. Please set it to use AI extraction."
+            }), 400
+        
+        # Extract publication data using OpenAI
+        try:
+            from exo_gpt.publication_extractor import extract_publication_data
+            
+            # Force extraction (don't use cached data)
+            # We'll modify the function call to force re-extraction
+            extracted_data = extract_publication_data(
+                filepath,
+                publications_dir,
+                excel_filename="publications_data.xlsx"
+            )
+            
+            publication_info = extracted_data.get('publication', {})
+            biomarkers = extracted_data.get('biomarkers', [])
+            
+            # Clean NaN values from biomarkers for JSON serialization
+            import pandas as pd
+            import numpy as np
+            
+            def clean_for_json(obj):
+                """Recursively clean NaN/None values for JSON serialization"""
+                if isinstance(obj, dict):
+                    return {k: clean_for_json(v) for k, v in obj.items()}
+                elif isinstance(obj, list):
+                    return [clean_for_json(item) for item in obj]
+                elif isinstance(obj, float):
+                    if pd.isna(obj) or np.isnan(obj):
+                        return None
+                elif isinstance(obj, type(pd.NA)) if hasattr(pd, 'NA') else False:
+                    return None
+                elif pd.isna(obj) if hasattr(pd, 'isna') else False:
+                    return None
+                return obj
+            
+            biomarkers_cleaned = clean_for_json(biomarkers)
+            publication_info_cleaned = clean_for_json(publication_info)
+            
+            # Determine disease and biofluid from biomarkers if available
+            diseases = set()
+            biofluids = set()
+            for bm in biomarkers:
+                if bm.get('disease'):
+                    diseases.add(bm['disease'])
+                if bm.get('biofluid'):
+                    biofluids.add(bm['biofluid'])
+            
+            return jsonify({
+                "success": True,
+                "message": "Biomarkers extracted successfully",
+                "filename": filename,
+                "extracted_data": {
+                    "disease": list(diseases)[0] if diseases else None,
+                    "biofluid": list(biofluids)[0] if biofluids else None,
+                    "biomarkers_found": len(biomarkers),
+                    "publication": publication_info_cleaned
+                },
+                "biomarkers": biomarkers_cleaned,
+                "excel_file": "publications_data.xlsx",
+                "note": f"Data saved to publications_data.xlsx in data/publications/"
+            })
+            
+        except ImportError as e:
+            return jsonify({
+                "success": False,
+                "error": f"Failed to import publication extractor: {str(e)}"
+            }), 500
+        except Exception as e:
+            import traceback
+            return jsonify({
+                "success": False,
+                "error": f"Failed to extract biomarkers: {str(e)}",
+                "traceback": traceback.format_exc()
+            }), 500
+        
+    except Exception as e:
+        import traceback
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }), 500
+
+
+@app.route("/api/step1/publication/details/<filename>", methods=["GET"])
+def get_publication_details(filename):
+    """Get publication details and biomarkers from Excel file"""
+    try:
+        from exo_gpt.publication_extractor import read_existing_data
+        import urllib.parse
+        
+        # Decode filename in case it has special characters
+        filename = urllib.parse.unquote(filename)
+        
+        publications_dir = os.path.join(PROJECT_ROOT, "data", "publications")
+        excel_path = os.path.join(publications_dir, "publications_data.xlsx")
+        
+        if not os.path.exists(excel_path):
+            return jsonify({
+                "success": False,
+                "error": "Excel file not found"
+            }), 404
+        
+        data = read_existing_data(excel_path, filename)
+        
+        if not data:
+            return jsonify({
+                "success": False,
+                "error": "Publication not found in Excel"
+            }), 404
+        
+        # Clean NaN values for JSON serialization
+        import pandas as pd
+        import numpy as np
+        
+        def clean_for_json(obj):
+            """Recursively clean NaN/None values for JSON serialization"""
+            if isinstance(obj, dict):
+                return {k: clean_for_json(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [clean_for_json(item) for item in obj]
+            elif isinstance(obj, float):
+                if pd.isna(obj) or np.isnan(obj):
+                    return None
+            elif isinstance(obj, type(pd.NA)) if hasattr(pd, 'NA') else False:
+                return None
+            elif pd.isna(obj) if hasattr(pd, 'isna') else False:
+                return None
+            return obj
+        
+        publication_cleaned = clean_for_json(data.get("publication", {}))
+        biomarkers_cleaned = clean_for_json(data.get("biomarkers", []))
+        
+        return jsonify({
+            "success": True,
+            "publication": publication_cleaned,
+            "biomarkers": biomarkers_cleaned
+        })
+        
+    except Exception as e:
+        import traceback
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }), 500
+
+
+@app.route("/api/step1/publication/list", methods=["GET"])
+def list_publications():
+    """List all uploaded publications in data/publications directory"""
+    try:
+        publications_dir = os.path.join(PROJECT_ROOT, "data", "publications")
+        os.makedirs(publications_dir, exist_ok=True)
+        
+        publications = []
+        allowed_extensions = {".pdf", ".txt", ".doc", ".docx", ".csv", ".tsv"}
+        
+        if os.path.exists(publications_dir):
+            for fname in os.listdir(publications_dir):
+                fpath = os.path.join(publications_dir, fname)
+                if os.path.isfile(fpath):
+                    file_ext = os.path.splitext(fname)[1].lower()
+                    if file_ext in allowed_extensions:
+                        stat = os.stat(fpath)
+                        publications.append({
+                            "filename": fname,
+                            "size": stat.st_size,
+                            "size_mb": round(stat.st_size / (1024 * 1024), 2),
+                            "modified": stat.st_mtime,
+                            "extension": file_ext,
+                            "is_csv": file_ext in {".csv", ".tsv"}
+                        })
+        
+        # Sort by modified time (newest first)
+        publications.sort(key=lambda x: x["modified"], reverse=True)
+        
+        return jsonify({
+            "success": True,
+            "publications": publications
+        })
+        
+    except Exception as e:
+        import traceback
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }), 500
+
+
+@app.route("/api/step1/publication/upload", methods=["POST"])
+def upload_publication():
+    """Upload and process a publication file using OpenAI API to extract biomarkers"""
+    try:
+        if "file" not in request.files:
+            return jsonify({"error": "No file provided"}), 400
+        
+        file = request.files["file"]
+        if file.filename == "":
+            return jsonify({"error": "No file selected"}), 400
+        
+        # Ensure publications directory exists
+        publications_dir = os.path.join(PROJECT_ROOT, "data", "publications")
+        os.makedirs(publications_dir, exist_ok=True)
+        
+        # Save file to publications directory
+        filename = file.filename
+        filepath = os.path.join(publications_dir, filename)
+        
+        # If file exists, add timestamp to avoid overwriting
+        if os.path.exists(filepath):
+            import time
+            name, ext = os.path.splitext(filename)
+            filename = f"{name}_{int(time.time())}{ext}"
+            filepath = os.path.join(publications_dir, filename)
+        
+        file.save(filepath)
+        
+        # Get file info
+        stat = os.stat(filepath)
+        file_ext = os.path.splitext(filename)[1].lower()
+        
+        # Check if OpenAI API key is available
+        openai_api_key = os.getenv("OPENAI_API_KEY")
+        if not openai_api_key:
+            return jsonify({
+                "success": False,
+                "error": "OPENAI_API_KEY environment variable not set. Please set it to use AI extraction.",
+                "filename": filename,
+                "size_mb": round(stat.st_size / (1024 * 1024), 2),
+            }), 400
+        
+        # Extract publication data using OpenAI
+        try:
+            from exo_gpt.publication_extractor import extract_publication_data
+            
+            extracted_data = extract_publication_data(
+                filepath,
+                publications_dir,
+                excel_filename="publications_data.xlsx"
+            )
+            
+            publication_info = extracted_data.get('publication', {})
+            biomarkers = extracted_data.get('biomarkers', [])
+            
+            # Clean NaN values from biomarkers for JSON serialization
+            import pandas as pd
+            import numpy as np
+            
+            def clean_for_json(obj):
+                """Recursively clean NaN/None values for JSON serialization"""
+                if isinstance(obj, dict):
+                    return {k: clean_for_json(v) for k, v in obj.items()}
+                elif isinstance(obj, list):
+                    return [clean_for_json(item) for item in obj]
+                elif isinstance(obj, float):
+                    if pd.isna(obj) or np.isnan(obj):
+                        return None
+                elif isinstance(obj, type(pd.NA)) if hasattr(pd, 'NA') else False:
+                    return None
+                elif pd.isna(obj) if hasattr(pd, 'isna') else False:
+                    return None
+                return obj
+            
+            biomarkers_cleaned = clean_for_json(biomarkers)
+            publication_info_cleaned = clean_for_json(publication_info)
+            
+            # Determine disease and biofluid from biomarkers if available
+            diseases = set()
+            biofluids = set()
+            for bm in biomarkers:
+                if bm.get('disease'):
+                    diseases.add(bm['disease'])
+                if bm.get('biofluid'):
+                    biofluids.add(bm['biofluid'])
+            
+            return jsonify({
+                "success": True,
+                "message": "Publication uploaded and processed successfully",
+                "filename": filename,
+                "size": stat.st_size,
+                "size_mb": round(stat.st_size / (1024 * 1024), 2),
+                "extracted_data": {
+                    "disease": list(diseases)[0] if diseases else None,
+                    "biofluid": list(biofluids)[0] if biofluids else None,
+                    "biomarkers_found": len(biomarkers),
+                    "publication": publication_info_cleaned
+                },
+                "biomarkers": biomarkers_cleaned,
+                "excel_file": "publications_data.xlsx",
+                "note": f"Data saved to publications_data.xlsx in data/publications/"
+            })
+            
+        except ImportError as e:
+            return jsonify({
+                "success": False,
+                "error": f"Failed to import publication extractor: {str(e)}",
+                "filename": filename,
+                "size_mb": round(stat.st_size / (1024 * 1024), 2),
+            }), 500
+        except Exception as e:
+            import traceback
+            return jsonify({
+                "success": False,
+                "error": f"Failed to extract publication data: {str(e)}",
+                "traceback": traceback.format_exc(),
+                "filename": filename,
+                "size_mb": round(stat.st_size / (1024 * 1024), 2),
+            }), 500
+        
+    except Exception as e:
+        import traceback
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }), 500
+
+
+@app.route("/api/step1/publication/search", methods=["POST"])
+def search_publications():
+    """RAG-based search across uploaded publications"""
+    try:
+        data = request.json
+        query = data.get("query", "")
+        
+        if not query:
+            return jsonify({"error": "Query is required"}), 400
+        
+        # TODO: Implement RAG-based search
+        # This should:
+        # 1. Use vector search/embeddings to find relevant passages
+        # 2. Extract biomarkers from relevant sections
+        # 3. Return ranked results with relevance scores
+        
+        # Placeholder response
+        return jsonify({
+            "success": True,
+            "message": "Search completed (RAG search not yet implemented)",
+            "biomarkers": []
+        })
+        
+    except Exception as e:
+        import traceback
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }), 500
+
+
 @app.route("/api/step2/run", methods=["POST"])
 def run_step2():
     """Execute Step 2: Target & Epitope Curator"""

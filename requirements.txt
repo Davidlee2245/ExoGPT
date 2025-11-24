@@ -11,6 +11,10 @@ flask-cors==6.0.1
 markupsafe==3.0.3  # Required by Flask/Werkzeug
 jinja2==3.1.6  # Required by Flask
 requests==2.32.5
+openai>=1.0.0
+openpyxl>=3.1.0
+PyPDF2>=3.0.0
+python-docx>=1.1.0
 
 # PyTorch with CUDA 11.8 (install separately via pip)
 # Note: PyTorch 2.1.0 with cu118 works with CUDA 11.6 toolkit (backward compatible)
