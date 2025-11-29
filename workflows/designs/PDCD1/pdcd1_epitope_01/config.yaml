@@ -1,0 +1,33 @@
+target_name: PDCD1
+gene_symbol: PDCD1
+uniprot: Q15116
+structure_type: pdb
+model_path: ./structures/pd1_ecd.pdb
+pdb_id: 3RRQ
+target_chain_id: A
+epitope_id: pdcd1_epitope_01
+epitope_residues:
+- 84
+- 85
+- 86
+- 87
+- 88
+- 89
+- 90
+- 91
+binder_length: 90
+binder_style: helical_mini_domain
+num_backbones: 1
+num_sequences_per_backbone: 8
+num_af_models: 1
+num_af_recycles: 3
+output_base_dir: /home/david/.cursor-tutor/ExoGPT/./workflows
+rfdiffusion_path: null
+proteinmpnn_path: null
+colabfold_path: null
+alphafold_path: null
+use_colabfold: true
+omitted_aa:
+- C
+- X
+binder_chain_id: B

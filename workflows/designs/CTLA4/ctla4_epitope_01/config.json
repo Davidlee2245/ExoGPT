@@ -1,0 +1,37 @@
+{
+  "target_name": "CTLA4",
+  "gene_symbol": "CTLA4",
+  "uniprot": "P16410",
+  "structure_type": "pdb",
+  "model_path": "./structures/ctla4_ecd.pdb",
+  "pdb_id": "1I8L",
+  "target_chain_id": "A",
+  "epitope_id": "ctla4_epitope_01",
+  "epitope_residues": [
+    96,
+    97,
+    98,
+    99,
+    100,
+    101,
+    102,
+    103
+  ],
+  "binder_length": 90,
+  "binder_style": "helical_mini_domain",
+  "num_backbones": 1,
+  "num_sequences_per_backbone": 8,
+  "num_af_models": 1,
+  "num_af_recycles": 3,
+  "output_base_dir": "/home/david/.cursor-tutor/ExoGPT/./workflows",
+  "rfdiffusion_path": null,
+  "proteinmpnn_path": null,
+  "colabfold_path": null,
+  "alphafold_path": null,
+  "use_colabfold": true,
+  "omitted_aa": [
+    "C",
+    "X"
+  ],
+  "binder_chain_id": "B"
+}

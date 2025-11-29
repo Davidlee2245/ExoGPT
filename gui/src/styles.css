@@ -395,6 +395,49 @@ code {
   font-size: 0.88rem;
 }
 
+.structure-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.85rem;
+}
+
+.structure-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  background: rgba(148, 163, 184, 0.2);
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  color: #e5e7eb;
+}
+
+.badge-pdb {
+  background: rgba(56, 189, 248, 0.18);
+  border-color: rgba(56, 189, 248, 0.4);
+  color: #bae6fd;
+}
+
+.badge-alphafold {
+  background: rgba(167, 139, 250, 0.18);
+  border-color: rgba(167, 139, 250, 0.4);
+  color: #ddd6fe;
+}
+
+.badge-unknown {
+  background: rgba(148, 163, 184, 0.2);
+  border-color: rgba(148, 163, 184, 0.35);
+  color: #e5e7eb;
+}
+
+.structure-divider {
+  color: var(--muted);
+  margin: 0 4px;
+}
+
 .biomarker-table-container {
   overflow-x: auto;
   margin: 16px 0;
@@ -455,6 +498,12 @@ code {
   background: rgba(148, 163, 184, 0.2);
   color: var(--muted);
   border: 1px solid var(--border-subtle);
+}
+
+.evidence-exist {
+  background: rgba(34, 197, 94, 0.25);
+  color: #bbf7d0;
+  border: 1px solid rgba(34, 197, 94, 0.5);
 }
 
 .markdown-output {

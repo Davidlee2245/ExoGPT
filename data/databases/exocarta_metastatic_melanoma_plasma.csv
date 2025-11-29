@@ -1,8 +1,0 @@
-study_id,disease,biofluid,analyte_type,gene_symbol,uniprot,logfc,p_value,fdr,method,pmid,notes
-exocarta_auto_1,Metastatic melanoma,Plasma,protein,CD63,P08962,0.85,0.001,0.01,Auto-downloaded,,Auto-downloaded from exocarta for Metastatic melanoma
-exocarta_auto_2,Metastatic melanoma,Plasma,protein,CD81,P60033,0.78,0.002,0.02,Auto-downloaded,,Auto-downloaded from exocarta for Metastatic melanoma
-exocarta_auto_3,Metastatic melanoma,Plasma,protein,TSG101,Q99816,0.72,0.003,0.03,Auto-downloaded,,Auto-downloaded from exocarta for Metastatic melanoma
-exocarta_auto_4,Metastatic melanoma,Plasma,protein,ALIX,Q8WUM4,0.68,0.004,0.04,Auto-downloaded,,Auto-downloaded from exocarta for Metastatic melanoma
-exocarta_auto_5,Metastatic melanoma,Plasma,protein,VEGFA,P15692,0.88,0.002,0.02,Auto-downloaded,,Auto-downloaded from exocarta for Metastatic melanoma
-exocarta_auto_6,Metastatic melanoma,Plasma,protein,IL8,P10145,0.82,0.003,0.03,Auto-downloaded,,Auto-downloaded from exocarta for Metastatic melanoma
-exocarta_auto_7,Metastatic melanoma,Plasma,miRNA,hsa-miR-21,,1.75,0.0002,0.002,Auto-downloaded,,Auto-downloaded from exocarta for Metastatic melanoma

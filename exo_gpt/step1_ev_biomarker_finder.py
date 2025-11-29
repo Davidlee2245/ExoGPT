@@ -24,12 +24,19 @@ import os
 from dataclasses import dataclass, asdict
 from typing import List, Dict, Any, Optional, Tuple
 import math
+import re
 
 import numpy as np
 import pandas as pd
 from scipy import stats
 
 DATA_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data"))
+
+# Minimal heuristic threshold for considering an extracellular domain
+# "long enough" to be an EV surface marker candidate.
+# PROM1-style long loops are typically >150 aa, but we use a conservative
+# lower bound so shorter but still usable loops are not discarded.
+MIN_EXTRACELLULAR_DOMAIN_LENGTH = 50
 
 
 def _load_ev_tables(data_dir: str, search_subdirs: bool = True) -> List[Tuple[str, pd.DataFrame]]:
@@ -106,6 +113,7 @@ class BiomarkerEvidence:
     score: float
     supporting_studies: List[Dict[str, Any]]
     # Compatibility fields for Step 2
+    protein_symbol: Optional[str] = None  # e.g., CD133 for PROM1
     num_studies: int = 1
     mean_logfc: Optional[float] = None  # Alias for log2fc
     min_p_value: Optional[float] = None  # Alias for p_value
@@ -113,6 +121,16 @@ class BiomarkerEvidence:
     surface_likelihood: Optional[float] = None  # Derived from is_transmembrane
     z_score_pathology: Optional[float] = None  # Z-score for pathology/disease tissue
     z_score_normal: Optional[float] = None  # Z-score for normal tissue
+    # Publication evidence (from data/publications/publications_data.xlsx, if available)
+    in_publications_excel: bool = False
+    # UniProt / topology details for EV surface marker assessment
+    in_uniprot: Optional[bool] = None
+    tm_helix_count: Optional[int] = None
+    tm_helix_regions: Optional[List[Dict[str, int]]] = None  # [{"start": int, "end": int}, ...]
+    topo_domains: Optional[List[Dict[str, Any]]] = None  # [{"start": int, "end": int, "region_type": str}, ...]
+    longest_extracellular_domain: Optional[int] = None
+    has_long_extracellular_domain: Optional[bool] = None
+    is_good_ev_surface_candidate: Optional[bool] = None
 
 
 def _load_hpa_bulk_pathology(hpa_dir: str, disease_tissue: str, normal_tissue: str, data_dir: str = None) -> Optional[pd.DataFrame]:
@@ -225,6 +243,55 @@ def _load_hpa_bulk_pathology(hpa_dir: str, disease_tissue: str, normal_tissue: s
         cancer_df = df[cancer_filter].copy()
         print(f"✓ Found {len(cancer_df)} genes for cancer type: {cancer_df['Cancer'].iloc[0] if not cancer_df.empty else 'N/A'}")
         
+        # --- Optional: derive gene-wise normal expression from normal_tissue.tsv ---
+        normal_baseline: Dict[str, float] = {}
+        if data_dir:
+            try:
+                hpa_raw_dir = os.path.join(data_dir, "hpa_raw")
+                normal_path = os.path.join(hpa_raw_dir, "normal_tissue.tsv")
+                if os.path.exists(normal_path):
+                    normal_df = pd.read_csv(normal_path, sep="\t", low_memory=False)
+                    # Prefer "Gene name" column (HGNC symbol)
+                    norm_gene_col = None
+                    for col in normal_df.columns:
+                        cl = col.lower()
+                        if cl == "gene name":
+                            norm_gene_col = col
+                            break
+                        if cl in ["gene", "gene_name", "ensembl", "ensembl id"] and norm_gene_col is None:
+                            norm_gene_col = col
+                    level_col = None
+                    for col in normal_df.columns:
+                        if col.lower() == "level":
+                            level_col = col
+                            break
+                    if norm_gene_col and level_col:
+                        # Map qualitative levels to numeric scores
+                        level_map = {
+                            "not detected": 0.0,
+                            "low": 1.0,
+                            "medium": 2.0,
+                            "high": 3.0,
+                        }
+                        scores: Dict[str, List[float]] = {}
+                        for _, nrow in normal_df.iterrows():
+                            g = str(nrow.get(norm_gene_col, "") or "").strip()
+                            if not g:
+                                continue
+                            lvl = str(nrow.get(level_col, "") or "").strip().lower()
+                            if lvl not in level_map:
+                                continue
+                            val = level_map[lvl]
+                            if g not in scores:
+                                scores[g] = []
+                            scores[g].append(val)
+                        for g, vals in scores.items():
+                            if vals:
+                                # Mean qualitative expression across all normal tissues / cell types
+                                normal_baseline[g] = float(np.mean(vals))
+            except Exception as e:
+                print(f"⚠️  Failed to load normal_tissue.tsv for baseline expression: {e}")
+        
         # Convert pathology counts to expression values
         # Use High count as primary signal, Medium as secondary
         # Expression value = weighted sum of High/Medium/Low counts
@@ -242,35 +309,38 @@ def _load_hpa_bulk_pathology(hpa_dir: str, disease_tissue: str, normal_tissue: s
             not_detected = int(row.get("Not detected", 0)) if pd.notna(row.get("Not detected")) else 0
             
             total_samples = high_count + medium_count + low_count + not_detected
-            
             if total_samples == 0:
                 continue
             
-            # Calculate weighted expression value
-            # High = 3.0, Medium = 2.0, Low = 1.0, Not detected = 0.1
-            # Weighted average based on sample counts
-            if total_samples > 0:
-                expression_value = (
-                    (high_count * 3.0 + medium_count * 2.0 + low_count * 1.0 + not_detected * 0.1) 
-                    / total_samples
-                )
-            else:
-                expression_value = 0.1
+            # Use ratio-based expression with weights so that:
+            #   High > Medium > Low > Not detected
+            #   e.g. 3H + 2M > 2H + 3M
+            # Weighted signal = 3*High + 2*Medium
+            # Weighted background = 1*Low + 0.25*Not detected
+            # expression_value = (signal + 1) / (background + 1)
+            signal = 3.0 * high_count + 2.0 * medium_count
+            background = 1.0 * low_count + 0.25 * not_detected
+            expression_value = (signal + 1.0) / (background + 1.0)
             
-            # Only include if there's some positive signal
-            if expression_value > 0.5:
-                # Add disease tissue row
+            # Only include if there is at least some signal (ratio > 1 ~ enrichment)
+            if expression_value > 1.0:
+                # Add disease tissue row with ratio-based expression
                 converted_data.append({
                     "gene_symbol": gene,
                     "tissue": disease_tissue,
                     "expression_value": expression_value
                 })
                 
-                # Add normal tissue row (baseline = 0.5 for normal expression)
+                # Add normal tissue row using baseline derived from normal_tissue.tsv if available.
+                # This penalizes biomarkers that are also highly expressed in many normal tissues.
+                baseline = normal_baseline.get(gene)
+                if baseline is None:
+                    # Default neutral baseline if we have no normal-tissue info for this gene
+                    baseline = 1.0
                 converted_data.append({
                     "gene_symbol": gene,
                     "tissue": normal_tissue,
-                    "expression_value": 0.5
+                    "expression_value": baseline
                 })
         
         if not converted_data:
@@ -496,30 +566,213 @@ def _load_uniprot_data(uniprot_dir: str) -> Optional[pd.DataFrame]:
     - Topological domain (for TM helix predictions)
     """
     if not os.path.exists(uniprot_dir):
+        print("⚠️  UniProt directory not found:", uniprot_dir)
         return None
     
-    uniprot_files = []
+    uniprot_files: List[str] = []
     for fname in os.listdir(uniprot_dir):
         fpath = os.path.join(uniprot_dir, fname)
-        if os.path.isfile(fpath) and (fname.lower().endswith(".csv") or fname.lower().endswith(".tsv")):
+        if not os.path.isfile(fpath):
+            continue
+        lower = fname.lower()
+        if lower.endswith(".tsv") or lower.endswith(".csv"):
             uniprot_files.append(fpath)
     
     if not uniprot_files:
+        print("⚠️  No UniProt .tsv/.csv files found in", uniprot_dir)
         return None
     
-    # Load first UniProt file (usually there's one main file)
+    # Prefer a file named uniprot.tsv if present, otherwise use the first one
+    preferred = None
+    for path in uniprot_files:
+        if os.path.basename(path).lower() == "uniprot.tsv":
+            preferred = path
+            break
+    if preferred is None:
+        preferred = sorted(uniprot_files)[0]
+    
     try:
-        df = pd.read_csv(uniprot_files[0], sep="\t", engine="python", low_memory=False)
-        # Also try CSV if TSV fails
-        if df.empty:
-            df = pd.read_csv(uniprot_files[0], sep=",", engine="python", low_memory=False)
-    except:
+        # Use C engine when possible; python engine complains about low_memory
+        df = pd.read_csv(preferred, sep="\t", engine="c", low_memory=False)
+    except Exception as e_tsv:
+        print(f"⚠️  Failed to read UniProt TSV ({preferred}) with C engine: {e_tsv}")
+        try:
+            df = pd.read_csv(preferred, sep="\t", engine="python")
+        except Exception as e_tsv_py:
+            print(f"⚠️  Failed to read UniProt TSV ({preferred}) with python engine: {e_tsv_py}")
+            try:
+                df = pd.read_csv(preferred, sep=",", engine="c", low_memory=False)
+            except Exception as e_csv:
+                print(f"❌ Failed to read UniProt file ({preferred}) as CSV as well: {e_csv}")
+                return None
+    
+    if df is None or df.empty:
+        print(f"⚠️  UniProt file {preferred} loaded but is empty.")
         return None
     
-    # Normalize column names
+    # Normalize column names (lowercase, underscores)
     df.columns = [c.lower().strip().replace(" ", "_") for c in df.columns]
-    
+    print(f"✓ Loaded UniProt data from {preferred} with shape {df.shape}")
     return df
+
+
+def _build_uniprot_topology_index(
+    uniprot_df: pd.DataFrame,
+    min_extracellular_len: int = MIN_EXTRACELLULAR_DOMAIN_LENGTH,
+) -> Dict[str, Dict[str, Any]]:
+    """
+    Build a per-gene UniProt topology index for downstream EV surface filtering.
+
+    For each gene symbol (and UniProt Entry), extract:
+    - Presence in UniProt
+    - List of TRANSMEM helices (start, end)
+    - List of TOPO_DOM regions with region_type:
+        "Extracellular", "Cytoplasmic", or "Other"
+    - Longest extracellular domain length
+    - has_long_extracellular_domain (>= min_extracellular_len)
+    - is_good_ev_surface_candidate: alias for has_long_extracellular_domain
+
+    Returned mapping keys:
+      - gene symbol (uppercased), e.g. "PROM1"
+      - UniProt entry ID (uppercased), e.g. "Q9Y5Y6"
+    """
+    if uniprot_df is None or uniprot_df.empty:
+        return {}
+
+    # We assume columns are already normalized to lowercase with underscores
+    cols = set(uniprot_df.columns)
+
+    # Identify key columns
+    entry_col = None
+    for cand in ["entry", "uniprot", "uniprot_id", "accession"]:
+        if cand in cols:
+            entry_col = cand
+            break
+
+    gene_col = None
+    for cand in ["gene_names", "gene_symbol", "gene", "gene_name"]:
+        if cand in cols:
+            gene_col = cand
+            break
+
+    tm_col = None
+    topo_col = None
+    protein_col = None
+    for c in cols:
+        cl = c.lower()
+        if tm_col is None and "transmembrane" in cl:
+            tm_col = c
+        if topo_col is None and ("topological_domain" in cl or "topological domain" in cl or "topo_dom" in cl):
+            topo_col = c
+        if protein_col is None and ("protein_names" in cl or "protein name" in cl):
+            protein_col = c
+
+    if entry_col is None and gene_col is None:
+        return {}
+
+    tm_pattern = re.compile(r"TRANSMEM\s+(\d+)\.\.(\d+)", re.IGNORECASE)
+    topo_pattern = re.compile(
+        r"TOPO_DOM\s+(\d+)\.\.(\d+);\s*/note=\"([^\"]+)\"",
+        re.IGNORECASE,
+    )
+
+    topology_index: Dict[str, Dict[str, Any]] = {}
+
+    def _merge_record(existing: Optional[Dict[str, Any]], new: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        If multiple UniProt entries map to the same gene, keep the one
+        with the longest extracellular domain; otherwise keep the first.
+        """
+        if existing is None:
+            return new
+        old_len = existing.get("longest_extracellular_domain") or 0
+        new_len = new.get("longest_extracellular_domain") or 0
+        if new_len > old_len:
+            return new
+        return existing
+
+    for _, row in uniprot_df.iterrows():
+        entry_id = str(row[entry_col]).strip() if entry_col and pd.notna(row.get(entry_col)) else None
+        tm_text = str(row[tm_col]) if tm_col and pd.notna(row.get(tm_col)) else ""
+        topo_text = str(row[topo_col]) if topo_col and pd.notna(row.get(topo_col)) else ""
+        protein_name = str(row[protein_col]) if protein_col and pd.notna(row.get(protein_col)) else ""
+
+        # Parse TRANSMEM helices
+        tm_helices: List[Dict[str, int]] = []
+        for m in tm_pattern.finditer(tm_text):
+            try:
+                start = int(m.group(1))
+                end = int(m.group(2))
+            except (TypeError, ValueError):
+                continue
+            if start <= 0 or end < start:
+                continue
+            tm_helices.append({"start": start, "end": end})
+
+        # Parse TOPO_DOM regions
+        topo_domains: List[Dict[str, Any]] = []
+        longest_extracellular = 0
+        for m in topo_pattern.finditer(topo_text):
+            try:
+                start = int(m.group(1))
+                end = int(m.group(2))
+            except (TypeError, ValueError):
+                continue
+            if start <= 0 or end < start:
+                continue
+            note = m.group(3) or ""
+            note_lower = note.lower()
+            if "extracellular" in note_lower:
+                region_type = "Extracellular"
+            elif "cytoplasmic" in note_lower:
+                region_type = "Cytoplasmic"
+            else:
+                region_type = note or "Other"
+
+            length = end - start + 1
+            if region_type == "Extracellular" and length > longest_extracellular:
+                longest_extracellular = length
+
+            topo_domains.append(
+                {
+                    "start": start,
+                    "end": end,
+                    "region_type": region_type,
+                    "note": note,
+                }
+            )
+
+        tm_helix_count = len(tm_helices) if tm_helices else 0
+        has_long_extracellular = longest_extracellular >= min_extracellular_len if longest_extracellular > 0 else False
+
+        record: Dict[str, Any] = {
+            "entry": entry_id,
+            "protein_name": protein_name or None,
+            "tm_helix_count": tm_helix_count,
+            "tm_helix_regions": tm_helices if tm_helices else None,
+            "topo_domains": topo_domains if topo_domains else None,
+            "longest_extracellular_domain": longest_extracellular if longest_extracellular > 0 else None,
+            "has_long_extracellular_domain": has_long_extracellular if topo_domains else None,
+            "is_good_ev_surface_candidate": has_long_extracellular if topo_domains else None,
+        }
+
+        # Index by UniProt Entry ID
+        if entry_id:
+            key = entry_id.strip().upper()
+            topology_index[key] = _merge_record(topology_index.get(key), record)
+
+        # Index by each gene symbol / alias
+        if gene_col and pd.notna(row.get(gene_col)):
+            genes_raw = str(row[gene_col])
+            # Split on commas, semicolons, or whitespace to handle
+            # multi-name cells like "PROM1 PROML1 MSTP061"
+            for gene in re.split(r"[;,\s]+", genes_raw):
+                gene = gene.strip().upper()
+                if not gene:
+                    continue
+                topology_index[gene] = _merge_record(topology_index.get(gene), record)
+
+    return topology_index
 
 
 def _filter_transmembrane_proteins(
@@ -559,35 +812,43 @@ def _filter_transmembrane_proteins(
     
     # Find location/annotation columns
     location_cols = [c for c in uniprot_df.columns if any(x in c for x in ["location", "subcellular", "topology", "transmembrane", "tm"])]
+    has_location_info = len(location_cols) > 0
     
     # Create mapping: gene_symbol -> is_transmembrane
     tm_map = {}
     
     for _, row in uniprot_df.iterrows():
-        is_tm = False
+        # Default assumption:
+        # - If we have explicit location/annotation columns, infer TM from text.
+        # - If we do NOT have those columns, assume every entry in this file is TM
+        #   (user may have pre-filtered UniProt to only transmembrane/topology proteins).
+        is_tm = not has_location_info
         
-        # Check subcellular location
-        for loc_col in location_cols:
-            if pd.notna(row.get(loc_col)):
-                loc_text = str(row[loc_col]).lower()
-                if any(x in loc_text for x in ["cell membrane", "plasma membrane", "membrane", "transmembrane"]):
-                    is_tm = True
-                    break
-        
-        # Check for TRANSMEM annotation
-        for col in uniprot_df.columns:
-            if pd.notna(row.get(col)):
-                col_text = str(row[col]).lower()
-                if "transmem" in col_text or "tm helix" in col_text:
-                    is_tm = True
-                    break
+        if has_location_info:
+            # Check subcellular location / topology annotations
+            for loc_col in location_cols:
+                if pd.notna(row.get(loc_col)):
+                    loc_text = str(row[loc_col]).lower()
+                    if any(x in loc_text for x in ["cell membrane", "plasma membrane", "membrane", "transmembrane"]):
+                        is_tm = True
+                        break
+            
+            # Check for TRANSMEM annotation in any column
+            if not is_tm:
+                for col in uniprot_df.columns:
+                    if pd.notna(row.get(col)):
+                        col_text = str(row[col]).lower()
+                        if "transmem" in col_text or "tm helix" in col_text:
+                            is_tm = True
+                            break
         
         # Get gene symbol(s) and UniProt ID
         uniprot_id = str(row[uniprot_id_col]) if pd.notna(row.get(uniprot_id_col)) else None
         
         if gene_col and pd.notna(row.get(gene_col)):
-            genes = str(row[gene_col]).split()
-            for gene in genes:
+            genes_raw = str(row[gene_col])
+            # Split on commas, semicolons, or whitespace – handles "PROM1 PROML1 MSTP061"
+            for gene in re.split(r"[;,\s]+", genes_raw):
                 gene = gene.strip().upper()
                 if gene:
                     tm_map[gene] = is_tm
@@ -616,11 +877,55 @@ def _filter_transmembrane_proteins(
 
 def _load_evpedia_data(evpedia_dir: str, data_dir: str) -> Optional[pd.DataFrame]:
     """
-    Load EVpedia TSV export with EV-associated proteins.
+    Load EV/vesicle protein data for EV-enrichment filtering.
     
-    Checks both ./data/evpedia/ and ./data/databases/ for EVpedia files.
-    Expected format similar to existing EVpedia CSV files.
+    Priority 1 (non-dummy, recommended):
+      - data/databases/VESICLEPEDIA_PROTEIN_MRNA_DETAILS_5.1.txt
+        Columns (tab-separated):
+          CONTENT ID, CONTENT TYPE, ENTREZ GENE ID, GENE SYMBOL, SPECIES, EXPERIMENT ID, METHODS
+        We use rows where:
+          - CONTENT TYPE == 'protein' (case-insensitive)
+          - GENE SYMBOL is non-empty
+        Returned columns:
+          - gene_symbol
+    
+    Legacy fallback (only if the master VESICLEPEDIA file is missing):
+      - data/evpedia/*.csv, *.tsv
+      - data/databases/*evpedia*.csv, *.tsv
     """
+    # --- Priority 1: VESICLEPEDIA master file (non-dummy source) ---
+    databases_dir = os.path.join(data_dir, "databases")
+    master_candidates = []
+    if os.path.exists(databases_dir):
+        for fname in os.listdir(databases_dir):
+            lower = fname.lower()
+            if "vesiclepedia_protein_mrna_details" in lower and lower.endswith(".txt"):
+                master_candidates.append(os.path.join(databases_dir, fname))
+    
+    if master_candidates:
+        master_path = sorted(master_candidates)[0]
+        try:
+            df = pd.read_csv(master_path, sep="\t", engine="python", dtype=str)
+        except Exception:
+            df = None
+        
+        if df is not None and not df.empty:
+            # Normalize column names
+            df.columns = [c.strip() for c in df.columns]
+            cols = {c.upper(): c for c in df.columns}
+            content_col = cols.get("CONTENT TYPE") or cols.get("CONTENT_TYPE")
+            gene_col = cols.get("GENE SYMBOL") or cols.get("GENE_SYMBOL")
+            
+            if content_col and gene_col:
+                # Filter to protein content type
+                mask_protein = df[content_col].astype(str).str.lower().str.strip() == "protein"
+                dfp = df[mask_protein].copy()
+                dfp["gene_symbol"] = dfp[gene_col].astype(str).str.strip()
+                dfp = dfp[dfp["gene_symbol"] != ""]
+                if not dfp.empty:
+                    return dfp[["gene_symbol"]].drop_duplicates().reset_index(drop=True)
+    
+    # --- Legacy fallback: old EVpedia CSV/TSV files (for backward compatibility) ---
     evpedia_files = []
     
     # Check dedicated evpedia directory
@@ -631,7 +936,6 @@ def _load_evpedia_data(evpedia_dir: str, data_dir: str) -> Optional[pd.DataFrame
                 evpedia_files.append(fpath)
     
     # Also check databases directory for EVpedia files
-    databases_dir = os.path.join(data_dir, "databases")
     if os.path.exists(databases_dir):
         for fname in os.listdir(databases_dir):
             if "evpedia" in fname.lower():
@@ -642,21 +946,17 @@ def _load_evpedia_data(evpedia_dir: str, data_dir: str) -> Optional[pd.DataFrame
     if not evpedia_files:
         return None
     
-    # Load all EVpedia files
     dfs = []
     for fpath in evpedia_files:
         try:
             df = pd.read_csv(fpath, sep=None, engine="python")
             df.columns = [c.lower().strip() for c in df.columns]
-            
-            # Check for required columns
             if "gene_symbol" in df.columns:
-                # Extract gene_symbol and uniprot if available
                 cols_to_keep = ["gene_symbol"]
                 if "uniprot" in df.columns:
                     cols_to_keep.append("uniprot")
                 dfs.append(df[cols_to_keep].drop_duplicates())
-        except:
+        except Exception:
             continue
     
     if not dfs:
@@ -693,6 +993,86 @@ def _filter_evpedia_proteins(
     )
     
     return markers_df
+
+
+def _load_publication_biomarker_index(
+    data_dir: str,
+) -> Optional[Dict[str, set]]:
+    """
+    Build an index of (disease, biofluid, gene_symbol) triples that appear
+    in data/publications/publications_data.xlsx (Biomarkers sheet).
+    
+    Returns:
+        {
+          "by_disease_biofluid": { (disease_lower, biofluid_lower): {GENE1, GENE2, ...} }
+        }
+    or None if Excel is missing or unreadable.
+    """
+    publications_dir = os.path.join(data_dir, "publications")
+    excel_path = os.path.join(publications_dir, "publications_data.xlsx")
+    
+    if not os.path.exists(excel_path):
+        return None
+    
+    try:
+        bio_df = pd.read_excel(excel_path, sheet_name="Biomarkers")
+    except Exception:
+        return None
+    
+    if bio_df is None or bio_df.empty:
+        return None
+    
+    # Normalize columns if present
+    cols = {c.lower(): c for c in bio_df.columns}
+    disease_col = cols.get("disease")
+    biofluid_col = cols.get("biofluid")
+    gene_col = cols.get("gene_symbol") or cols.get("gene")
+    reported_col = cols.get("reported_marker")  # from publication_extractor
+    gene_norm_col = cols.get("gene_symbol_normalized")
+    
+    if not (gene_col or reported_col or gene_norm_col):
+        return None
+    
+    index: Dict[str, set] = {}
+    key_map: Dict[tuple, set] = {}
+    
+    for _, row in bio_df.iterrows():
+        # Collect all possible identifiers for this biomarker:
+        # - gene symbol (PROM1)
+        # - normalized gene symbol
+        # - reported marker (e.g., CD133, PD-L1) with and without spaces/hyphens
+        names: set[str] = set()
+        
+        if gene_col:
+            g = str(row.get(gene_col, "") or "").strip().upper()
+            if g:
+                names.add(g)
+        
+        if gene_norm_col:
+            g_norm = str(row.get(gene_norm_col, "") or "").strip().upper()
+            if g_norm:
+                names.add(g_norm)
+        
+        if reported_col:
+            rep = str(row.get(reported_col, "") or "").strip().upper()
+            if rep:
+                names.add(rep)
+                # Also add versions without spaces or hyphens, so "CD 133" or "PD-L1"
+                # will match "CD133" / "PDL1" in downstream queries.
+                rep_compact = rep.replace(" ", "").replace("-", "")
+                if rep_compact:
+                    names.add(rep_compact)
+        
+        if not names:
+            continue
+        disease = str(row.get(disease_col, "") or "").strip().lower() if disease_col else ""
+        biofluid = str(row.get(biofluid_col, "") or "").strip().lower() if biofluid_col else ""
+        key = (disease, biofluid)
+        if key not in key_map:
+            key_map[key] = set()
+        key_map[key].update(names)
+    
+    return {"by_disease_biofluid": key_map}
 
 
 def _aggregate_biomarkers_legacy(
@@ -822,6 +1202,11 @@ def aggregate_biomarkers(
     # Step 2: Filter by UniProt transmembrane annotations
     uniprot_dir = os.path.join(data_dir, "uniprot")
     uniprot_df = _load_uniprot_data(uniprot_dir)
+    # Build UniProt topology index for downstream EV surface marker analysis
+    uniprot_topology_index: Dict[str, Dict[str, Any]] = {}
+    if uniprot_df is not None and not uniprot_df.empty:
+        uniprot_topology_index = _build_uniprot_topology_index(uniprot_df)
+
     markers_df = _filter_transmembrane_proteins(markers_df, uniprot_df)
     
     # Step 3: Filter by EVpedia
@@ -844,6 +1229,7 @@ def aggregate_biomarkers(
     
     for _, row in final_markers.iterrows():
         gene_symbol = str(row["gene_symbol"])
+        gene_key = gene_symbol.strip().upper()
         log2fc = float(row["log2fc"]) if pd.notna(row.get("log2fc")) else None
         p_value = float(row["p_value"]) if pd.notna(row.get("p_value")) else None
         fdr = float(row["fdr"]) if pd.notna(row.get("fdr")) else None
@@ -877,6 +1263,43 @@ def aggregate_biomarkers(
         
         is_transmembrane = bool(row.get("is_transmembrane", False))
         in_evpedia = bool(row.get("in_evpedia", False))
+
+        # UniProt topology-based surface marker assessment
+        topo_info = None
+        in_uniprot = False
+        tm_helix_count = None
+        tm_helix_regions = None
+        topo_domains = None
+        longest_extracellular_domain = None
+        has_long_extracellular_domain = None
+        is_good_ev_surface_candidate = None
+
+        # Prefer gene-based lookup; if missing, try UniProt entry ID
+        if gene_key in uniprot_topology_index:
+            topo_info = uniprot_topology_index[gene_key]
+        elif uniprot:
+            topo_info = uniprot_topology_index.get(str(uniprot).strip().upper())
+
+        protein_symbol = None
+        if topo_info is not None:
+            in_uniprot = True
+            tm_helix_count = topo_info.get("tm_helix_count")
+            tm_helix_regions = topo_info.get("tm_helix_regions")
+            topo_domains = topo_info.get("topo_domains")
+            longest_extracellular_domain = topo_info.get("longest_extracellular_domain")
+            has_long_extracellular_domain = topo_info.get("has_long_extracellular_domain")
+            is_good_ev_surface_candidate = topo_info.get("is_good_ev_surface_candidate")
+            # Derive a compact protein symbol from protein name when available,
+            # e.g. extract CD antigens like "CD133" from "CD antigen CD133".
+            protein_name = topo_info.get("protein_name") or ""
+            if protein_name:
+                # Look for CD-style antigen names, case-insensitive
+                m_cd = re.search(r"\bCD\d+[A-Z]?\b", protein_name, flags=re.IGNORECASE)
+                if m_cd:
+                    protein_symbol = m_cd.group(0).upper()
+                elif gene_symbol:
+                    # Fallback: use gene symbol as protein symbol when no CD alias
+                    protein_symbol = gene_symbol
         
         # Evidence level based on statistical significance
         if fdr is not None and fdr < 0.001:
@@ -889,20 +1312,27 @@ def aggregate_biomarkers(
             evidence_level = "low"
         
         # Compute score
+        # New scoring scheme (emphasizes differential z-scores and surface/EV evidence):
+        #   score = ((z_pathology - z_normal) * 2)
+        #           + 5 * TM
+        #           + 5 * EVpedia
         score = 0.0
-        if log2fc is not None:
-            score += abs(log2fc) * 3.0
-        if p_value is not None and p_value > 0:
-            score += -math.log10(p_value) * 0.5
-        if fdr is not None and fdr > 0:
-            score += -math.log10(fdr) * 0.3
+        z_path = z_score_pathology if z_score_pathology is not None else 0.0
+        z_norm = z_score_normal if z_score_normal is not None else 0.0
+        score += (z_path - z_norm) * 2.0
         if is_transmembrane:
             score += 5.0
         if in_evpedia:
             score += 5.0
         
-        # Surface likelihood: high if transmembrane, moderate if in EVpedia
-        if is_transmembrane:
+        # Surface likelihood:
+        # - Highest if UniProt topology suggests a long extracellular domain
+        # - Otherwise, high if transmembrane
+        # - Otherwise, moderate if in EVpedia
+        # - Fallback low baseline
+        if is_good_ev_surface_candidate:
+            surface_likelihood = 0.95
+        elif is_transmembrane:
             surface_likelihood = 0.8
         elif in_evpedia:
             surface_likelihood = 0.5
@@ -913,6 +1343,7 @@ def aggregate_biomarkers(
             BiomarkerEvidence(
                 gene_symbol=gene_symbol,
                 uniprot=uniprot,
+                protein_symbol=protein_symbol,
                 analyte_type="protein",
                 log2fc=log2fc,
                 p_value=p_value,
@@ -940,11 +1371,47 @@ def aggregate_biomarkers(
                 surface_likelihood=surface_likelihood,
                 z_score_pathology=z_score_pathology,  # Z-score for pathology/disease tissue
                 z_score_normal=z_score_normal,  # Z-score for normal tissue
+                in_uniprot=in_uniprot,
+                tm_helix_count=tm_helix_count,
+                tm_helix_regions=tm_helix_regions,
+                topo_domains=topo_domains,
+                longest_extracellular_domain=longest_extracellular_domain,
+                has_long_extracellular_domain=has_long_extracellular_domain,
+                is_good_ev_surface_candidate=is_good_ev_surface_candidate,
             )
         )
     
     # Sort by score (highest first)
     biomarkers_sorted = sorted(biomarkers, key=lambda b: b.score, reverse=True)
+    
+    # Optional: mark which biomarkers are present in publications_data.xlsx
+    pub_index = _load_publication_biomarker_index(data_dir)
+    if pub_index is not None:
+        by_db = pub_index.get("by_disease_biofluid", {})
+        disease_key = (str(disease).strip().lower(), str(biofluid).strip().lower())
+        alt_key = (str(disease).strip().lower(), "")
+        genes_for_pair = by_db.get(disease_key, set()) | by_db.get(alt_key, set())
+        if genes_for_pair:
+            for b in biomarkers_sorted:
+                g = (b.gene_symbol or "").strip().upper()
+                p = (getattr(b, "protein_symbol", None) or "").strip().upper()
+                # Also consider compact versions without spaces/hyphens
+                g_compact = g.replace(" ", "").replace("-", "") if g else ""
+                p_compact = p.replace(" ", "").replace("-", "") if p else ""
+                in_pubs = (
+                    (g and (g in genes_for_pair or g_compact in genes_for_pair))
+                    or (p and (p in genes_for_pair or p_compact in genes_for_pair))
+                )
+                if in_pubs:
+                    b.in_publications_excel = True
+                    # Bonus for literature evidence
+                    try:
+                        b.score = float(b.score) + 1.0
+                    except Exception:
+                        pass
+
+            # Re-sort after updating scores so rank order matches final score
+            biomarkers_sorted = sorted(biomarkers_sorted, key=lambda b: b.score, reverse=True)
     
     # Convert to dicts
     biomarkers_dicts = [asdict(b) for b in biomarkers_sorted]
@@ -984,26 +1451,81 @@ def aggregate_biomarkers(
 
 
 def biomarkers_to_markdown(ev_biomarkers: List[Dict[str, Any]], top_n: int = 20) -> str:
-    """Generate markdown table of top biomarkers."""
+    """Generate markdown table of top biomarkers with score components exposed."""
     lines = []
-    lines.append("|Rank|Gene|UniProt|Log2FC|P-value|FDR|Z-score (Path)|Z-score (Norm)|Evidence|TM|EVpedia|Score|")
-    lines.append("|---|---|---|---|---|---|---|---|---|---|---|---|")
+    # Columns:
+    # - Core identifiers and stats
+    # - Individual score components (effect size, p, FDR, TM bonus, EV bonus)
+    # - Surface / topology flags
+    lines.append(
+        "|Rank|Gene|UniProt|Log2FC|"
+        "Effect (|log2FC|×1)|"
+        "P-value|P term (-log10·0.5)|"
+        "FDR|FDR term (-log10·0.3)|"
+        "TM|TM bonus|EVpedia|EV bonus|"
+        "Topo surface?|Surface likelihood|"
+        "Z-score (Path)|Z-score (Norm)|Evidence|Total score|"
+    )
+    lines.append(
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"
+    )
     
     for idx, bm in enumerate(ev_biomarkers[:top_n], 1):
         rank = idx
         gene = bm.get("gene_symbol", "—")
         uniprot = bm.get("uniprot") or "—"
         log2fc = f"{bm.get('log2fc', 0):.2f}" if bm.get("log2fc") is not None else "—"
-        p_value = f"{bm.get('p_value', 0):.2e}" if bm.get("p_value") is not None else "—"
-        fdr = f"{bm.get('fdr', 0):.2e}" if bm.get("fdr") is not None else "—"
+        raw_log2fc = bm.get("log2fc")
+
+        # P/FDR formatting
+        raw_p = bm.get("p_value")
+        raw_fdr = bm.get("fdr")
+        p_value = f"{raw_p:.2e}" if raw_p is not None else "—"
+        fdr = f"{raw_fdr:.2e}" if raw_fdr is not None else "—"
+
+        # Z-scores
         z_score_path = f"{bm.get('z_score_pathology', 0):.2f}" if bm.get("z_score_pathology") is not None else "—"
         z_score_norm = f"{bm.get('z_score_normal', 0):.2f}" if bm.get("z_score_normal") is not None else "—"
         evidence = bm.get("evidence_level", "—")
-        tm = "✓" if bm.get("is_transmembrane") else "—"
-        evpedia = "✓" if bm.get("in_evpedia") else "—"
+
+        # Boolean flags
+        is_tm = bool(bm.get("is_transmembrane"))
+        in_evpedia = bool(bm.get("in_evpedia"))
+        topo_surface = "✓" if bm.get("is_good_ev_surface_candidate") else "—"
+
+        # Score components (recomputed to make table self-documenting)
+        effect_term = abs(raw_log2fc) * 1.0 if raw_log2fc is not None else 0.0
+        if raw_p is not None and raw_p > 0:
+            p_term = -math.log10(raw_p) * 0.5
+        else:
+            p_term = 0.0
+        if raw_fdr is not None and raw_fdr > 0:
+            fdr_term = -math.log10(raw_fdr) * 0.3
+        else:
+            fdr_term = 0.0
+        tm_bonus = 5.0 if is_tm else 0.0
+        ev_bonus = 5.0 if in_evpedia else 0.0
+
+        tm = "✓" if is_tm else "—"
+        evpedia = "✓" if in_evpedia else "—"
+        surface_likelihood = bm.get("surface_likelihood")
+        surface_likelihood_str = f"{surface_likelihood:.2f}" if surface_likelihood is not None else "—"
         score = f"{bm.get('score', 0):.2f}"
+        effect_term_str = f"{effect_term:.2f}"
+        p_term_str = f"{p_term:.2f}"
+        fdr_term_str = f"{fdr_term:.2f}"
+        tm_bonus_str = f"{tm_bonus:.1f}" if tm_bonus else "0.0"
+        ev_bonus_str = f"{ev_bonus:.1f}" if ev_bonus else "0.0"
         
-        lines.append(f"|{rank}|{gene}|{uniprot}|{log2fc}|{p_value}|{fdr}|{z_score_path}|{z_score_norm}|{evidence}|{tm}|{evpedia}|{score}|")
+        lines.append(
+            f"|{rank}|{gene}|{uniprot}|{log2fc}|"
+            f"{effect_term_str}|"
+            f"{p_value}|{p_term_str}|"
+            f"{fdr}|{fdr_term_str}|"
+            f"{tm}|{tm_bonus_str}|{evpedia}|{ev_bonus_str}|"
+            f"{topo_surface}|{surface_likelihood_str}|"
+            f"{z_score_path}|{z_score_norm}|{evidence}|{score}|"
+        )
     
     return "\n".join(lines)
 

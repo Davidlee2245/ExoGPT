@@ -5,6 +5,7 @@ Extracts biomarkers and publication metadata from PDFs and saves to Excel
 
 import os
 import json
+import re
 from typing import Dict, List, Any, Optional
 from pathlib import Path
 import pandas as pd
@@ -17,6 +18,105 @@ from openai import OpenAI
 
 # Get OpenAI API key from environment
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+# Cached UniProt alias map for mapping protein/marker names → gene symbols
+_UNIPROT_ALIAS_MAP: Optional[Dict[str, str]] = None
+
+
+def _load_uniprot_alias_map() -> Dict[str, str]:
+    """
+    Build a mapping from various marker names (including CD antigens)
+    to canonical gene symbols using the local UniProt TSV export.
+    
+    Examples:
+        "CD133" -> "PROM1"
+        "PD-L1" (if present as alias) -> "CD274"
+    """
+    global _UNIPROT_ALIAS_MAP
+    if _UNIPROT_ALIAS_MAP is not None:
+        return _UNIPROT_ALIAS_MAP
+
+    alias_map: Dict[str, str] = {}
+
+    try:
+        project_root = Path(__file__).resolve().parent.parent
+        uniprot_path = project_root / "data" / "uniprot" / "uniprot.tsv"
+        if not uniprot_path.exists():
+            _UNIPROT_ALIAS_MAP = {}
+            return _UNIPROT_ALIAS_MAP
+
+        # Only load the columns we need
+        df = pd.read_csv(
+            uniprot_path,
+            sep="\t",
+            usecols=["Gene Names", "Protein names"],
+            dtype=str,
+            engine="c",
+        )
+    except Exception:
+        _UNIPROT_ALIAS_MAP = {}
+        return _UNIPROT_ALIAS_MAP
+
+    for _, row in df.iterrows():
+        gene_names = str(row.get("Gene Names") or "").strip()
+        prot_names = str(row.get("Protein names") or "").strip()
+
+        if not gene_names:
+            continue
+
+        # First token in Gene Names is typically the primary gene symbol
+        genes = gene_names.split()
+        primary = genes[0].strip().upper()
+        if not primary:
+            continue
+
+        # Map all gene name aliases to the primary symbol
+        for g in genes:
+            g_clean = g.strip().upper()
+            if g_clean and g_clean not in alias_map:
+                alias_map[g_clean] = primary
+
+        # Extract CD antigen aliases from Protein names, e.g.
+        # "Prominin-1 (Antigen AC133) (CD antigen CD133)"
+        if prot_names:
+            # Look for patterns like "CD133", "CD24", etc.
+            for m in re.findall(r"CD\d+[A-Z]?", prot_names, flags=re.IGNORECASE):
+                cd_alias = m.strip().upper()
+                if cd_alias and cd_alias not in alias_map:
+                    alias_map[cd_alias] = primary
+
+    _UNIPROT_ALIAS_MAP = alias_map
+    return _UNIPROT_ALIAS_MAP
+
+
+def _normalize_gene_symbol_from_marker(raw_name: str) -> Dict[str, str]:
+    """
+    Normalize a marker/antigen name to a canonical gene symbol using UniProt.
+    
+    Returns dict with:
+      - reported_marker: original string from the publication / OpenAI
+      - gene_symbol: best-guess gene symbol (uppercased) or reported_marker if unknown
+      - gene_symbol_normalized: same as gene_symbol (explicit column for downstream joins)
+    """
+    reported = (raw_name or "").strip()
+    if not reported:
+        return {
+            "reported_marker": "",
+            "gene_symbol": "",
+            "gene_symbol_normalized": "",
+        }
+
+    alias_map = _load_uniprot_alias_map()
+    key = reported.upper()
+
+    # Direct lookup (e.g., proper HGNC symbol or CD antigen)
+    gene_symbol = alias_map.get(key, key)
+
+    return {
+        "reported_marker": reported,
+        "gene_symbol": gene_symbol,
+        "gene_symbol_normalized": gene_symbol,
+    }
 
 
 def extract_text_from_pdf(pdf_path: str) -> str:
@@ -299,9 +399,19 @@ def save_to_excel(
     # Prepare biomarker rows
     bio_rows = []
     for bm in biomarkers:
+        # OpenAI returns "gene_symbol" which may actually be a protein/CD marker
+        # (e.g., "CD133"). We preserve the original in reported_marker and
+        # map to a canonical gene symbol using UniProt aliases.
+        raw_gene = bm.get('gene_symbol', '') or ''
+        gene_info = _normalize_gene_symbol_from_marker(str(raw_gene))
         bio_row = {
             'publication_filename': filename,
-            'gene_symbol': bm.get('gene_symbol', ''),
+            # Original string extracted from the paper / OpenAI
+            'reported_marker': gene_info['reported_marker'],
+            # Canonical gene symbol (e.g., CD133 -> PROM1) where resolvable
+            'gene_symbol': gene_info['gene_symbol'],
+            # Explicit normalized gene symbol column for downstream joins / matching
+            'gene_symbol_normalized': gene_info['gene_symbol_normalized'],
             'uniprot': bm.get('uniprot', ''),
             'analyte_type': bm.get('analyte_type', 'protein'),
             'disease': bm.get('disease', ''),

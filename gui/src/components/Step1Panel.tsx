@@ -1,10 +1,14 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 
 interface Biomarker {
   gene_symbol: string;
+  protein_symbol?: string;
   uniprot?: string;
   analyte_type: string;
   surface_likelihood?: number;
+  is_transmembrane?: boolean;
+  in_evpedia?: boolean;
+  is_good_ev_surface_candidate?: boolean;
   num_studies: number;
   mean_logfc?: number;
   min_p_value?: number;
@@ -13,6 +17,10 @@ interface Biomarker {
   score: number;
   z_score_pathology?: number;
   z_score_normal?: number;
+  // Optional topology / TM info (not all entries will have these)
+  tm_helix_count?: number | null;
+  longest_extracellular_domain?: number | null;
+  in_publications_excel?: boolean;
 }
 
 interface Step1Result {
@@ -82,6 +90,33 @@ export const Step1Panel: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [markdownTable, setMarkdownTable] = useState<string | null>(null);
   const [showHpaSuggestions, setShowHpaSuggestions] = useState(false);
+
+  // Restore last Step 1 results when the panel mounts so users
+  // see the previous run without clicking "Run Step 1" again.
+  useEffect(() => {
+    try {
+      const savedResult = localStorage.getItem("step1_result");
+      const savedDisease = localStorage.getItem("step1_disease");
+      const savedBiofluid = localStorage.getItem("step1_biofluid");
+      const savedMarkdown = localStorage.getItem("step1_markdown_table");
+
+      if (savedDisease) {
+        setDisease(savedDisease);
+      }
+      if (savedBiofluid) {
+        setBiofluid(savedBiofluid);
+      }
+      if (savedResult) {
+        const parsed: Step1Result = JSON.parse(savedResult);
+        setResult(parsed);
+      }
+      if (savedMarkdown) {
+        setMarkdownTable(savedMarkdown || null);
+      }
+    } catch (e) {
+      console.warn("Failed to restore Step 1 results from localStorage:", e);
+    }
+  }, []);
 
   const handleRun = async () => {
     setLoading(true);
@@ -175,6 +210,11 @@ export const Step1Panel: React.FC = () => {
         localStorage.setItem('step1_result', JSON.stringify(data.result));
         localStorage.setItem('step1_disease', disease);
         localStorage.setItem('step1_biofluid', biofluid);
+        if (data.markdown_table) {
+          localStorage.setItem('step1_markdown_table', data.markdown_table);
+        } else {
+          localStorage.removeItem('step1_markdown_table');
+        }
         // Also save the JSON path if available
         if (data.saved_json_path) {
           // Store relative path for display
@@ -471,48 +511,54 @@ export const Step1Panel: React.FC = () => {
                     <tr>
                       <th>Rank</th>
                       <th>Gene Symbol</th>
-                      <th>UniProt</th>
-                      <th>Type</th>
-                      <th>Surface Status</th>
-                      <th>Studies</th>
-                      <th>Mean logFC</th>
-                      <th>Min p-value</th>
+                      <th>Protein Symbol</th>
+                      <th>Surface status</th>
+                      <th>Mean log2FC</th>
+                      <th>TM</th>
+                      <th>EVpedia</th>
+                      <th>Topo surface?</th>
+                      <th>Surface likelihood</th>
                       <th>Z-score (Pathology)</th>
                       <th>Z-score (Normal)</th>
                       <th>Evidence</th>
-                      <th>Score</th>
+                      <th>Total score</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {result.ev_biomarkers.slice(0, 50).map((bm, idx) => (
+                    {result.ev_biomarkers.slice(0, 50).map((bm: any, idx: number) => (
                       <tr key={idx}>
                         <td>{idx + 1}</td>
                         <td><strong>{bm.gene_symbol}</strong></td>
-                        <td>{bm.uniprot || "—"}</td>
-                        <td>{bm.analyte_type}</td>
+                        <td>{bm.protein_symbol || "—"}</td>
                         <td>
-                          {bm.surface_likelihood !== null && bm.surface_likelihood !== undefined
-                            ? (() => {
-                                // Display text labels instead of numeric values
-                                if (Math.abs(bm.surface_likelihood - 0.8) < 0.01) {
-                                  return "Transmembrane";
-                                } else if (Math.abs(bm.surface_likelihood - 0.5) < 0.01) {
-                                  return "EVpedia";
-                                } else {
-                                  return "—";
-                                }
-                              })()
-                            : "—"}
+                          {bm.surface_likelihood !== null && bm.surface_likelihood !== undefined ? (
+                            (() => {
+                              if (bm.is_good_ev_surface_candidate) {
+                                return "Long extracellular domain";
+                              }
+                              if (bm.is_transmembrane) {
+                                return "Transmembrane";
+                              }
+                              if (bm.in_evpedia) {
+                                return "EV-enriched (no TM)";
+                              }
+                              return "—";
+                            })()
+                          ) : "—"}
                         </td>
-                        <td>{bm.num_studies}</td>
                         <td>
                           {bm.mean_logfc !== null && bm.mean_logfc !== undefined
                             ? bm.mean_logfc.toFixed(2)
                             : "—"}
                         </td>
+                        <td>{bm.is_transmembrane ? "✓" : "—"}</td>
+                        <td>{bm.in_evpedia ? "✓" : "—"}</td>
+                        {/* Topology-based EV surface candidate flag */}
+                        <td>{bm.is_good_ev_surface_candidate ? "✓" : "—"}</td>
+                        {/* Surface likelihood numeric value */}
                         <td>
-                          {bm.min_p_value !== null && bm.min_p_value !== undefined
-                            ? bm.min_p_value.toExponential(2)
+                          {bm.surface_likelihood !== null && bm.surface_likelihood !== undefined
+                            ? bm.surface_likelihood.toFixed(2)
                             : "—"}
                         </td>
                         <td>
@@ -526,9 +572,11 @@ export const Step1Panel: React.FC = () => {
                             : "—"}
                         </td>
                         <td>
-                          <span className={`evidence-badge evidence-${bm.evidence_level}`}>
-                            {bm.evidence_level}
-                          </span>
+                          {bm.in_publications_excel ? (
+                            <span className="evidence-badge evidence-exist">
+                              Exist
+                            </span>
+                          ) : null}
                         </td>
                         <td><strong>{bm.score.toFixed(2)}</strong></td>
                       </tr>

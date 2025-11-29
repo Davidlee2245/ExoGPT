@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useMemo, useState } from "react";
 
 interface EpitopePatch {
   epitope_id: string;
@@ -131,6 +131,16 @@ export const Step2Panel: React.FC = () => {
     `  --out_md "./epitopes/mm_plasma_epitopes.md"`
   ].filter(Boolean).join(" \\\n");
 
+  const structureBreakdown = useMemo(() => {
+    if (!result) return null;
+    return result.curated_targets.reduce<Record<string, number>>((acc, target) => {
+      const rawType = target.structure_type || "unknown";
+      const label = rawType.toLowerCase() === "pdb" ? "PDB" : rawType.toLowerCase() === "alphafold" ? "AlphaFold" : rawType;
+      acc[label] = (acc[label] || 0) + 1;
+      return acc;
+    }, {});
+  }, [result]);
+
   return (
     <section className="panel">
       <header className="panel-header">
@@ -222,50 +232,18 @@ export const Step2Panel: React.FC = () => {
               <p>
                 <strong>Curated {result.num_targets} target(s)</strong>
               </p>
-              {result.debug_info && (
-                <div className="debug-info" style={{ marginTop: "10px", padding: "10px", backgroundColor: "#f5f5f5", borderRadius: "4px", fontSize: "0.9em" }}>
-                  <strong>Debug Info:</strong>
-                  <ul style={{ margin: "5px 0", paddingLeft: "20px" }}>
-                    <li>Total biomarkers: {result.debug_info.total_biomarkers}</li>
-                    <li>Suitable biomarkers: {result.debug_info.suitable_biomarkers}</li>
-                    <li>Selected biomarkers: {result.debug_info.selected_biomarkers}</li>
-                    <li>Structure mapping file: {result.debug_info.structure_mapping_file}</li>
-                    <li>Structure mapping exists: {result.debug_info.structure_mapping_exists ? "Yes" : "No"}</li>
-                    <li>Structure mapping loaded: {result.debug_info.structure_mapping_loaded ? "Yes" : "No"}</li>
-                    <li>Structure mapping rows: {result.debug_info.structure_mapping_rows}</li>
-                    <li>Skipped (no structure): {result.debug_info.skipped_no_structure}</li>
-                  </ul>
-                  {result.debug_info.skipped_biomarkers && result.debug_info.skipped_biomarkers.length > 0 && (
-                    <div style={{ marginTop: "10px" }}>
-                      <strong>Skipped Biomarkers (Detailed):</strong>
-                      {result.debug_info.skipped_biomarkers.map((skipped: any, idx: number) => (
-                        <div key={idx} style={{ marginTop: "5px", padding: "5px", backgroundColor: "#fff", border: "1px solid #ddd" }}>
-                          <strong>{skipped.gene_symbol}</strong> (UniProt: {skipped.uniprot || "N/A"})<br/>
-                          Normalized: gene={skipped.gene_normalized}, uniprot={skipped.uniprot_normalized}<br/>
-                          Gene in mapping: {skipped.gene_in_mapping ? "YES" : "NO"}<br/>
-                          UniProt in mapping: {skipped.uniprot_in_mapping ? "YES" : "NO"}<br/>
-                          Mapping genes: {skipped.mapping_genes_sample?.join(", ") || "N/A"}<br/>
-                          Mapping UniProts: {skipped.mapping_uniprots_sample?.join(", ") || "N/A"}<br/>
-                          Actual genes in DF: {skipped.actual_genes_in_df?.join(", ") || "N/A"}<br/>
-                          Actual UniProts in DF: {skipped.actual_uniprots_in_df?.join(", ") || "N/A"}<br/>
-                          DF columns: {skipped.mapping_df_columns?.join(", ") || "N/A"}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  {result.debug_info.selected_biomarker_details && result.debug_info.selected_biomarker_details.length > 0 && (
-                    <div style={{ marginTop: "10px" }}>
-                      <strong>Selected Biomarkers:</strong>
-                      <ul style={{ margin: "5px 0", paddingLeft: "20px" }}>
-                        {result.debug_info.selected_biomarker_details.map((bm: any, idx: number) => (
-                          <li key={idx}>
-                            {bm.gene_symbol} (UniProt: {bm.uniprot || "N/A"}, Type: {bm.analyte_type}, Score: {bm.score?.toFixed(2)})
-                          </li>
+              {structureBreakdown && (
+                <p className="structure-summary">
+                  <strong>3D Models:</strong>{" "}
+                  {Object.entries(structureBreakdown).map(([label, count], idx, arr) => (
+                    <React.Fragment key={label}>
+                      <span className={`structure-badge badge-${label.toLowerCase()}`}>
+                        {label} ({count})
+                      </span>
+                      {idx < arr.length - 1 && <span className="structure-divider">·</span>}
+                    </React.Fragment>
                         ))}
-                      </ul>
-                    </div>
-                  )}
-                </div>
+                </p>
               )}
             </div>
 
@@ -365,6 +343,73 @@ export const Step2Panel: React.FC = () => {
                 <pre className="markdown-block">
                   <code>{markdownTable}</code>
                 </pre>
+              </div>
+            )}
+
+            {result.debug_info && (
+              <div
+                className="debug-info"
+                style={{
+                  marginTop: "18px",
+                  padding: "14px 16px",
+                  backgroundColor: "#f8fafc",
+                  borderRadius: "10px",
+                  fontSize: "0.9em",
+                  color: "#0f172a",
+                  border: "1px solid #cbd5f5",
+                }}
+              >
+                <strong style={{ display: "block", marginBottom: "6px" }}>Debug Info:</strong>
+                <ul style={{ margin: "5px 0", paddingLeft: "22px", color: "#0f172a" }}>
+                  <li>Total biomarkers: {result.debug_info.total_biomarkers}</li>
+                  <li>Suitable biomarkers: {result.debug_info.suitable_biomarkers}</li>
+                  <li>Selected biomarkers: {result.debug_info.selected_biomarkers}</li>
+                  <li>Structure mapping file: {result.debug_info.structure_mapping_file}</li>
+                  <li>Structure mapping exists: {result.debug_info.structure_mapping_exists ? "Yes" : "No"}</li>
+                  <li>Structure mapping loaded: {result.debug_info.structure_mapping_loaded ? "Yes" : "No"}</li>
+                  <li>Structure mapping rows: {result.debug_info.structure_mapping_rows}</li>
+                  <li>Skipped (no structure): {result.debug_info.skipped_no_structure}</li>
+                </ul>
+                {result.debug_info.skipped_biomarkers && result.debug_info.skipped_biomarkers.length > 0 && (
+                  <div style={{ marginTop: "12px" }}>
+                    <strong>Skipped Biomarkers (Detailed):</strong>
+                    {result.debug_info.skipped_biomarkers.map((skipped: any, idx: number) => (
+                      <div
+                        key={idx}
+                        style={{
+                          marginTop: "8px",
+                          padding: "6px 8px",
+                          backgroundColor: "#ffffff",
+                          border: "1px solid #d1d5db",
+                          borderRadius: "6px",
+                          color: "#111827",
+                        }}
+                      >
+                        <strong>{skipped.gene_symbol}</strong> (UniProt: {skipped.uniprot || "N/A"})<br />
+                        Normalized: gene={skipped.gene_normalized}, uniprot={skipped.uniprot_normalized}<br />
+                        Gene in mapping: {skipped.gene_in_mapping ? "YES" : "NO"}<br />
+                        UniProt in mapping: {skipped.uniprot_in_mapping ? "YES" : "NO"}<br />
+                        Mapping genes: {skipped.mapping_genes_sample?.join(", ") || "N/A"}<br />
+                        Mapping UniProts: {skipped.mapping_uniprots_sample?.join(", ") || "N/A"}<br />
+                        Actual genes in DF: {skipped.actual_genes_in_df?.join(", ") || "N/A"}<br />
+                        Actual UniProts in DF: {skipped.actual_uniprots_in_df?.join(", ") || "N/A"}<br />
+                        DF columns: {skipped.mapping_df_columns?.join(", ") || "N/A"}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {result.debug_info.selected_biomarker_details && result.debug_info.selected_biomarker_details.length > 0 && (
+                  <div style={{ marginTop: "12px" }}>
+                    <strong>Selected Biomarkers:</strong>
+                    <ul style={{ margin: "6px 0", paddingLeft: "22px" }}>
+                      {result.debug_info.selected_biomarker_details.map((bm: any, idx: number) => (
+                        <li key={idx}>
+                          {bm.gene_symbol} (UniProt: {bm.uniprot || "N/A"}, Type: {bm.analyte_type}, Score: {bm.score?.toFixed(2)})
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
               </div>
             )}
           </div>

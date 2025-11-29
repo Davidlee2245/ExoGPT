@@ -1,0 +1,34 @@
+target_name: CD63
+gene_symbol: CD63
+uniprot: P08962
+structure_type: alphafold
+model_path: ./structures/cd63_alphafold.pdb
+pdb_id: null
+target_chain_id: A
+epitope_id: cd63_epitope_01
+epitope_residues:
+- 100
+- 101
+- 102
+- 103
+- 104
+- 105
+- 106
+- 107
+- 108
+binder_length: 90
+binder_style: helical_mini_domain
+num_backbones: 1
+num_sequences_per_backbone: 8
+num_af_models: 1
+num_af_recycles: 3
+output_base_dir: /home/david/.cursor-tutor/ExoGPT/./workflows
+rfdiffusion_path: null
+proteinmpnn_path: null
+colabfold_path: null
+alphafold_path: null
+use_colabfold: true
+omitted_aa:
+- C
+- X
+binder_chain_id: B
