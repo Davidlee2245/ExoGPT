@@ -31,7 +31,11 @@ interface PublicationDetails {
   }>;
 }
 
-export const PublicationUploadPanel: React.FC = () => {
+interface PublicationUploadPanelProps {
+  dataType?: "protein" | "mrna";  // Determines which data directory to use
+}
+
+export const PublicationUploadPanel: React.FC<PublicationUploadPanelProps> = ({ dataType = "protein" }) => {
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [searching, setSearching] = useState(false);
@@ -48,7 +52,10 @@ export const PublicationUploadPanel: React.FC = () => {
   const loadPublications = async () => {
     setLoadingPublications(true);
     try {
-      const response = await fetch("http://localhost:5000/api/step1/publication/list");
+      const endpoint = dataType === "mrna" 
+        ? "http://localhost:5000/api/mrna/step1/publication/list"
+        : "http://localhost:5000/api/step1/publication/list";
+      const response = await fetch(endpoint);
       const data = await response.json();
       
       if (data.success) {
@@ -75,7 +82,10 @@ export const PublicationUploadPanel: React.FC = () => {
     
     try {
       const encodedFilename = encodeURIComponent(filename);
-      const response = await fetch(`http://localhost:5000/api/step1/publication/details/${encodedFilename}`);
+      const endpoint = dataType === "mrna"
+        ? `http://localhost:5000/api/mrna/step1/publication/details/${encodedFilename}`
+        : `http://localhost:5000/api/step1/publication/details/${encodedFilename}`;
+      const response = await fetch(endpoint);
       const data = await response.json();
       
       if (data.success) {
@@ -97,7 +107,10 @@ export const PublicationUploadPanel: React.FC = () => {
     setExtractionStatus(prev => ({ ...prev, [filename]: { success: false, message: "Extracting..." } }));
     
     try {
-      const response = await fetch("http://localhost:5000/api/step1/publication/extract", {
+      const endpoint = dataType === "mrna"
+        ? "http://localhost:5000/api/mrna/step1/publication/extract"
+        : "http://localhost:5000/api/step1/publication/extract";
+      const response = await fetch(endpoint, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -153,7 +166,10 @@ export const PublicationUploadPanel: React.FC = () => {
     setError(null);
 
     try {
-      const response = await fetch("http://localhost:5000/api/step1/publication/search", {
+      const endpoint = dataType === "mrna"
+        ? "http://localhost:5000/api/mrna/step1/publication/search"
+        : "http://localhost:5000/api/step1/publication/search";
+      const response = await fetch(endpoint, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

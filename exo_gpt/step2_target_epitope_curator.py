@@ -61,7 +61,8 @@ except ImportError:  # pragma: no cover - fallback for script execution
         StructureFeatures,
     )
 
-DATA_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data"))
+# Protein data directory
+DATA_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data", "protein"))
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 STRUCTURE_CACHE_DIR = os.path.join(PROJECT_ROOT, "structures", "processed_step2")
 AUTO_STRUCTURE_DIR = os.path.join(PROJECT_ROOT, "structures", "auto_downloaded")

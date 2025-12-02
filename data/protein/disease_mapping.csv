@@ -1,0 +1,7 @@
+disease_name,doid,mesh,synonyms
+Metastatic melanoma,DOID:8923,D008545|melanoma|skin cancer|malignant melanoma
+Melanoma,DOID:8923,D008545|skin cancer|malignant melanoma
+Breast cancer,DOID:1612,D001943|breast carcinoma|mammary cancer
+Lung cancer,DOID:1324,D008175|lung carcinoma|pulmonary cancer
+Colorectal cancer,DOID:9256,D015179|colon cancer|rectal cancer|CRC
+

@@ -47,7 +47,8 @@ def check_step1_data():
         
         from exo_gpt.data_downloader import DataDownloader
         
-        downloader = DataDownloader()
+        # Use protein data directory for Step 1 (protein biomarkers)
+        downloader = DataDownloader(data_type="protein")
         has_data = downloader.check_local_data(disease, biofluid)
         
         return jsonify({
@@ -82,7 +83,8 @@ def download_step1_data():
         def progress_callback(message: str, percent: float):
             progress_messages.append({"message": message, "percent": percent})
         
-        downloader = DataDownloader(progress_callback=progress_callback)
+        # Use protein data directory for Step 1 (protein biomarkers)
+        downloader = DataDownloader(progress_callback=progress_callback, data_type="protein")
         downloaded_files = downloader.download_all_sources(disease, biofluid)
         
         return jsonify({
@@ -122,7 +124,7 @@ def run_step1():
         
         if auto_download:
             has_data, downloaded = download_data_if_needed(
-                disease, biofluid, progress_callback
+                disease, biofluid, progress_callback, data_type="protein"
             )
         else:
             has_data = True
@@ -204,7 +206,8 @@ def extract_publication():
         import urllib.parse
         filename = urllib.parse.unquote(filename)
         
-        publications_dir = os.path.join(PROJECT_ROOT, "data", "publications")
+        # Use protein publications directory for Step 1 (protein biomarkers)
+        publications_dir = os.path.join(PROJECT_ROOT, "data", "protein", "publications")
         filepath = os.path.join(publications_dir, filename)
         
         if not os.path.exists(filepath):
@@ -314,7 +317,8 @@ def get_publication_details(filename):
         # Decode filename in case it has special characters
         filename = urllib.parse.unquote(filename)
         
-        publications_dir = os.path.join(PROJECT_ROOT, "data", "publications")
+        # Use protein publications directory for Step 1 (protein biomarkers)
+        publications_dir = os.path.join(PROJECT_ROOT, "data", "protein", "publications")
         excel_path = os.path.join(publications_dir, "publications_data.xlsx")
         
         if not os.path.exists(excel_path):
@@ -372,7 +376,8 @@ def get_publication_details(filename):
 def list_publications():
     """List all uploaded publications in data/publications directory"""
     try:
-        publications_dir = os.path.join(PROJECT_ROOT, "data", "publications")
+        # Use protein publications directory for Step 1 (protein biomarkers)
+        publications_dir = os.path.join(PROJECT_ROOT, "data", "protein", "publications")
         os.makedirs(publications_dir, exist_ok=True)
         
         publications = []
@@ -423,7 +428,8 @@ def upload_publication():
             return jsonify({"error": "No file selected"}), 400
         
         # Ensure publications directory exists
-        publications_dir = os.path.join(PROJECT_ROOT, "data", "publications")
+        # Use protein publications directory for Step 1 (protein biomarkers)
+        publications_dir = os.path.join(PROJECT_ROOT, "data", "protein", "publications")
         os.makedirs(publications_dir, exist_ok=True)
         
         # Save file to publications directory
@@ -540,6 +546,38 @@ def upload_publication():
         }), 500
 
 
+@app.route("/api/mrna/step1/publication/search", methods=["POST"])
+def search_mrna_publications():
+    """RAG-based search across uploaded mRNA publications"""
+    try:
+        data = request.json
+        query = data.get("query", "")
+        
+        if not query:
+            return jsonify({"error": "Query is required"}), 400
+        
+        # TODO: Implement RAG-based search
+        # This should:
+        # 1. Use vector search/embeddings to find relevant passages
+        # 2. Extract biomarkers from relevant sections
+        # 3. Return ranked results with relevance scores
+        
+        # Placeholder response
+        return jsonify({
+            "success": True,
+            "message": "Search completed (RAG search not yet implemented)",
+            "biomarkers": []
+        })
+        
+    except Exception as e:
+        import traceback
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }), 500
+
+
 @app.route("/api/step1/publication/search", methods=["POST"])
 def search_publications():
     """RAG-based search across uploaded publications"""
@@ -572,6 +610,324 @@ def search_publications():
         }), 500
 
 
+@app.route("/api/mrna/step1/publication/list", methods=["GET"])
+def list_mrna_publications():
+    """List all uploaded publications in data/mRNA/publications directory"""
+    try:
+        # Use mRNA publications directory
+        publications_dir = os.path.join(PROJECT_ROOT, "data", "mRNA", "publications")
+        os.makedirs(publications_dir, exist_ok=True)
+        
+        publications = []
+        allowed_extensions = {".pdf", ".txt", ".doc", ".docx", ".csv", ".tsv"}
+        
+        if os.path.exists(publications_dir):
+            for fname in os.listdir(publications_dir):
+                fpath = os.path.join(publications_dir, fname)
+                if os.path.isfile(fpath):
+                    file_ext = os.path.splitext(fname)[1].lower()
+                    if file_ext in allowed_extensions:
+                        stat = os.stat(fpath)
+                        publications.append({
+                            "filename": fname,
+                            "size": stat.st_size,
+                            "size_mb": round(stat.st_size / (1024 * 1024), 2),
+                            "modified": stat.st_mtime,
+                            "extension": file_ext,
+                            "is_csv": file_ext in {".csv", ".tsv"}
+                        })
+        
+        publications.sort(key=lambda x: x["modified"], reverse=True)
+        
+        return jsonify({
+            "success": True,
+            "publications": publications
+        })
+        
+    except Exception as e:
+        import traceback
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }), 500
+
+
+@app.route("/api/mrna/step1/publication/upload", methods=["POST"])
+def upload_mrna_publication():
+    """Upload and process a publication file for mRNA biomarkers"""
+    try:
+        if "file" not in request.files:
+            return jsonify({"error": "No file provided"}), 400
+        
+        file = request.files["file"]
+        if file.filename == "":
+            return jsonify({"error": "No file selected"}), 400
+        
+        # Use mRNA publications directory
+        publications_dir = os.path.join(PROJECT_ROOT, "data", "mRNA", "publications")
+        os.makedirs(publications_dir, exist_ok=True)
+        
+        filename = file.filename
+        filepath = os.path.join(publications_dir, filename)
+        
+        if os.path.exists(filepath):
+            import time
+            name, ext = os.path.splitext(filename)
+            filename = f"{name}_{int(time.time())}{ext}"
+            filepath = os.path.join(publications_dir, filename)
+        
+        file.save(filepath)
+        
+        stat = os.stat(filepath)
+        file_ext = os.path.splitext(filename)[1].lower()
+        openai_api_key = os.getenv("OPENAI_API_KEY")
+        
+        if not openai_api_key:
+            return jsonify({
+                "success": False,
+                "error": "OPENAI_API_KEY environment variable not set.",
+                "filename": filename,
+                "size_mb": round(stat.st_size / (1024 * 1024), 2),
+            }), 400
+        
+        try:
+            from exo_gpt.publication_extractor import extract_publication_data
+            
+            extracted_data = extract_publication_data(
+                filepath,
+                publications_dir,
+                excel_filename="publications_data.xlsx"
+            )
+            
+            publication_info = extracted_data.get('publication', {})
+            biomarkers = extracted_data.get('biomarkers', [])
+            
+            import pandas as pd
+            import numpy as np
+            
+            def clean_for_json(obj):
+                if isinstance(obj, dict):
+                    return {k: clean_for_json(v) for k, v in obj.items()}
+                elif isinstance(obj, list):
+                    return [clean_for_json(item) for item in obj]
+                elif isinstance(obj, float):
+                    if pd.isna(obj) or np.isnan(obj):
+                        return None
+                elif isinstance(obj, type(pd.NA)) if hasattr(pd, 'NA') else False:
+                    return None
+                elif pd.isna(obj) if hasattr(pd, 'isna') else False:
+                    return None
+                return obj
+            
+            biomarkers_cleaned = clean_for_json(biomarkers)
+            publication_info_cleaned = clean_for_json(publication_info)
+            
+            diseases = set()
+            biofluids = set()
+            for bm in biomarkers:
+                if bm.get('disease'):
+                    diseases.add(bm['disease'])
+                if bm.get('biofluid'):
+                    biofluids.add(bm['biofluid'])
+            
+            return jsonify({
+                "success": True,
+                "message": "Publication uploaded and processed successfully",
+                "filename": filename,
+                "size": stat.st_size,
+                "size_mb": round(stat.st_size / (1024 * 1024), 2),
+                "extracted_data": {
+                    "disease": list(diseases)[0] if diseases else None,
+                    "biofluid": list(biofluids)[0] if biofluids else None,
+                    "biomarkers_found": len(biomarkers),
+                    "publication": publication_info_cleaned
+                },
+                "biomarkers": biomarkers_cleaned,
+                "excel_file": "publications_data.xlsx",
+                "note": f"Data saved to publications_data.xlsx in data/mRNA/publications/"
+            })
+            
+        except Exception as e:
+            import traceback
+            return jsonify({
+                "success": False,
+                "error": f"Failed to extract publication data: {str(e)}",
+                "traceback": traceback.format_exc(),
+                "filename": filename,
+                "size_mb": round(stat.st_size / (1024 * 1024), 2),
+            }), 500
+        
+    except Exception as e:
+        import traceback
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }), 500
+
+
+@app.route("/api/mrna/step1/publication/details/<filename>", methods=["GET"])
+def get_mrna_publication_details(filename):
+    """Get publication details from mRNA publications Excel file"""
+    try:
+        from exo_gpt.publication_extractor import read_existing_data
+        import urllib.parse
+        
+        filename = urllib.parse.unquote(filename)
+        publications_dir = os.path.join(PROJECT_ROOT, "data", "mRNA", "publications")
+        excel_path = os.path.join(publications_dir, "publications_data.xlsx")
+        
+        if not os.path.exists(excel_path):
+            return jsonify({
+                "success": False,
+                "error": "Excel file not found"
+            }), 404
+        
+        data = read_existing_data(excel_path, filename)
+        
+        if not data:
+            return jsonify({
+                "success": False,
+                "error": "Publication not found in Excel"
+            }), 404
+        
+        import pandas as pd
+        import numpy as np
+        
+        def clean_for_json(obj):
+            if isinstance(obj, dict):
+                return {k: clean_for_json(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [clean_for_json(item) for item in obj]
+            elif isinstance(obj, float):
+                if pd.isna(obj) or np.isnan(obj):
+                    return None
+            elif isinstance(obj, type(pd.NA)) if hasattr(pd, 'NA') else False:
+                return None
+            elif pd.isna(obj) if hasattr(pd, 'isna') else False:
+                return None
+            return obj
+        
+        publication_cleaned = clean_for_json(data.get("publication", {}))
+        biomarkers_cleaned = clean_for_json(data.get("biomarkers", []))
+        
+        return jsonify({
+            "success": True,
+            "publication": publication_cleaned,
+            "biomarkers": biomarkers_cleaned
+        })
+        
+    except Exception as e:
+        import traceback
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }), 500
+
+
+@app.route("/api/mrna/step1/publication/extract", methods=["POST"])
+def extract_mrna_publication():
+    """Extract biomarkers from mRNA publication file"""
+    try:
+        data = request.json
+        filename = data.get("filename")
+        
+        if not filename:
+            return jsonify({"error": "filename is required"}), 400
+        
+        import urllib.parse
+        filename = urllib.parse.unquote(filename)
+        
+        publications_dir = os.path.join(PROJECT_ROOT, "data", "mRNA", "publications")
+        filepath = os.path.join(publications_dir, filename)
+        
+        if not os.path.exists(filepath):
+            return jsonify({
+                "success": False,
+                "error": f"File not found: {filename}"
+            }), 404
+        
+        openai_api_key = os.getenv("OPENAI_API_KEY")
+        if not openai_api_key:
+            return jsonify({
+                "success": False,
+                "error": "OPENAI_API_KEY environment variable not set."
+            }), 400
+        
+        try:
+            from exo_gpt.publication_extractor import extract_publication_data
+            
+            extracted_data = extract_publication_data(
+                filepath,
+                publications_dir,
+                excel_filename="publications_data.xlsx"
+            )
+            
+            publication_info = extracted_data.get('publication', {})
+            biomarkers = extracted_data.get('biomarkers', [])
+            
+            import pandas as pd
+            import numpy as np
+            
+            def clean_for_json(obj):
+                if isinstance(obj, dict):
+                    return {k: clean_for_json(v) for k, v in obj.items()}
+                elif isinstance(obj, list):
+                    return [clean_for_json(item) for item in obj]
+                elif isinstance(obj, float):
+                    if pd.isna(obj) or np.isnan(obj):
+                        return None
+                elif isinstance(obj, type(pd.NA)) if hasattr(pd, 'NA') else False:
+                    return None
+                elif pd.isna(obj) if hasattr(pd, 'isna') else False:
+                    return None
+                return obj
+            
+            biomarkers_cleaned = clean_for_json(biomarkers)
+            publication_info_cleaned = clean_for_json(publication_info)
+            
+            diseases = set()
+            biofluids = set()
+            for bm in biomarkers:
+                if bm.get('disease'):
+                    diseases.add(bm['disease'])
+                if bm.get('biofluid'):
+                    biofluids.add(bm['biofluid'])
+            
+            return jsonify({
+                "success": True,
+                "message": "Biomarkers extracted successfully",
+                "filename": filename,
+                "extracted_data": {
+                    "disease": list(diseases)[0] if diseases else None,
+                    "biofluid": list(biofluids)[0] if biofluids else None,
+                    "biomarkers_found": len(biomarkers),
+                    "publication": publication_info_cleaned
+                },
+                "biomarkers": biomarkers_cleaned,
+                "excel_file": "publications_data.xlsx",
+                "note": f"Data saved to publications_data.xlsx in data/mRNA/publications/"
+            })
+            
+        except Exception as e:
+            import traceback
+            return jsonify({
+                "success": False,
+                "error": f"Failed to extract biomarkers: {str(e)}",
+                "traceback": traceback.format_exc()
+            }), 500
+        
+    except Exception as e:
+        import traceback
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }), 500
+
+
 @app.route("/api/step2/run", methods=["POST"])
 def run_step2():
     """Execute Step 2: Target & Epitope Curator"""
@@ -583,7 +939,7 @@ def run_step2():
         max_targets = data.get("max_targets", 5)
         structure_mapping_path = data.get(
             "structure_mapping_path",
-            os.path.join(PROJECT_ROOT, "data", "structure_mapping.csv")
+            os.path.join(PROJECT_ROOT, "data", "protein", "structure_mapping.csv")
         )
         
         # Either step1_json_path or step1_json_data must be provided
@@ -945,6 +1301,269 @@ def run_step3():
             "plan": plan,
             "error": plan.get("error") if not plan.get("success") else None,
             "progress": progress_messages if execute else []
+        })
+        
+    except Exception as e:
+        import traceback
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }), 500
+
+
+@app.route("/api/step3/antibody-finder", methods=["POST", "OPTIONS"])
+def run_antibody_finder():
+    """Find existing antibodies for Step 2 targets/epitopes"""
+    # Handle CORS preflight
+    if request.method == "OPTIONS":
+        response = jsonify({})
+        response.headers.add("Access-Control-Allow-Origin", "*")
+        response.headers.add("Access-Control-Allow-Headers", "Content-Type")
+        response.headers.add("Access-Control-Allow-Methods", "POST, OPTIONS")
+        return response
+    
+    try:
+        data = request.json
+        step2_json_path = data.get("step2_json_path")
+        step2_json_data = data.get("step2_json_data")
+        search_mode = data.get("search_mode", "hybrid")
+        commercial_sources = data.get("commercial_sources", ["all"])
+        epitope_overlap_threshold = data.get("epitope_overlap_threshold", 0.3)
+        max_results_per_epitope = data.get("max_results_per_epitope", 50)
+        
+        # Either step2_json_path or step2_json_data must be provided
+        if not step2_json_path and not step2_json_data:
+            return jsonify({
+                "success": False,
+                "error": "step2_json_path or step2_json_data is required"
+            }), 400
+        
+        # If JSON data is provided directly, write it to a temp file
+        if step2_json_data:
+            import tempfile
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+                json.dump(step2_json_data, f)
+                step2_json_path = f.name
+        else:
+            # Ensure step2_json_path is absolute and normalize path
+            if step2_json_path:
+                # Remove leading ./ if present
+                if step2_json_path.startswith('./'):
+                    step2_json_path = step2_json_path[2:]
+                # Make absolute path relative to project root
+                step2_json_path = os.path.join(PROJECT_ROOT, step2_json_path)
+                if not os.path.exists(step2_json_path):
+                    return jsonify({
+                        "success": False,
+                        "error": f"Step 2 JSON file not found: {step2_json_path}"
+                    }), 400
+        
+        # Import and call the actual antibody finder module
+        from exo_gpt.step3_antibody_finder import find_existing_antibodies
+        
+        # Progress callback for API (store messages in list)
+        progress_messages = []
+        
+        def progress_callback(message: str, percent: float):
+            progress_messages.append({"message": message, "percent": percent})
+        
+        # Run antibody finder
+        result_obj = find_existing_antibodies(
+            step2_json_path=step2_json_path,
+            search_mode=search_mode,
+            commercial_sources=commercial_sources,
+            epitope_overlap_threshold=epitope_overlap_threshold,
+            max_results_per_epitope=max_results_per_epitope,
+            progress_callback=progress_callback
+        )
+        
+        # Convert result object to dict for JSON response
+        from dataclasses import asdict
+        result = {
+            "target_name": result_obj.target_name,
+            "gene_symbol": result_obj.gene_symbol,
+            "uniprot": result_obj.uniprot,
+            "epitope_matches": [
+                {
+                    "epitope_id": m.epitope_id,
+                    "match_type": m.match_type,
+                    "commercial_antibodies": [asdict(ab) for ab in m.commercial_antibodies],
+                    "structural_antibodies": m.structural_antibodies,
+                    "match_confidence": m.match_confidence,
+                    "notes": m.notes
+                }
+                for m in result_obj.epitope_matches
+            ],
+            "search_metadata": result_obj.search_metadata
+        }
+        
+        return jsonify({
+            "success": True,
+            "result": result
+        }), 200
+        
+    except Exception as e:
+        import traceback
+        error_response = jsonify({
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        })
+        error_response.headers.add("Access-Control-Allow-Origin", "*")
+        return error_response, 500
+
+
+@app.route("/api/mrna/step1/run", methods=["POST"])
+def run_mrna_step1():
+    """Run mRNA Step 1: EV Biomarker Finder with automatic TCGA download"""
+    try:
+        data = request.json
+        disease = data.get("disease", "")
+        biofluid = data.get("biofluid", "Plasma")
+        top_n = data.get("top_n", 50)
+        auto_download_tcga = data.get("auto_download_tcga", True)  # Default to True
+        use_exorbase2 = data.get("use_exorbase2", True)  # Default to True
+        use_tcga = data.get("use_tcga", True)  # Default to True
+        
+        if not disease:
+            return jsonify({"error": "disease is required"}), 400
+        
+        if not use_exorbase2 and not use_tcga:
+            return jsonify({"error": "At least one data source must be selected"}), 400
+        
+        # Import and run the mRNA biomarker finder
+        from exo_gpt.step1_mrna_biomarker_finder import discover_mrna_biomarkers, biomarkers_to_markdown
+        
+        # Run the discovery with automatic TCGA download and data source options
+        result = discover_mrna_biomarkers(
+            disease, 
+            biofluid, 
+            top_n, 
+            auto_download_tcga=auto_download_tcga,
+            use_exorbase2=use_exorbase2,
+            use_tcga=use_tcga
+        )
+        
+        # Generate markdown table
+        markdown_table = biomarkers_to_markdown(result["ev_mrna_biomarkers"], top_n)
+        
+        # Clean NaN values for JSON serialization
+        import pandas as pd
+        import numpy as np
+        
+        def clean_for_json(obj):
+            if isinstance(obj, dict):
+                return {k: clean_for_json(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [clean_for_json(item) for item in obj]
+            elif isinstance(obj, float):
+                if pd.isna(obj) or np.isnan(obj):
+                    return None
+            elif isinstance(obj, type(pd.NA)) if hasattr(pd, 'NA') else False:
+                return None
+            return obj
+        
+        cleaned_result = clean_for_json(result)
+        
+        # Save results to file for Step 2 to use
+        scores_dir = os.path.join(PROJECT_ROOT, "scores")
+        os.makedirs(scores_dir, exist_ok=True)
+        
+        safe_disease = disease.lower().replace(" ", "_").replace("/", "_")
+        safe_biofluid = biofluid.lower().replace(" ", "_")
+        json_filename = f"mrna_{safe_disease}_{safe_biofluid}_biomarkers.json"
+        json_path = os.path.join(scores_dir, json_filename)
+        
+        try:
+            with open(json_path, "w") as f:
+                json.dump(cleaned_result, f, indent=2)
+        except Exception as e:
+            print(f"Warning: Could not save mRNA Step 1 results to {json_path}: {e}")
+        
+        return jsonify({
+            "success": True,
+            "result": cleaned_result,
+            "markdown_table": markdown_table,
+            "saved_json_path": json_path if os.path.exists(json_path) else None
+        })
+        
+    except Exception as e:
+        import traceback
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }), 500
+
+
+@app.route("/api/mrna/step2/run", methods=["POST"])
+def run_mrna_step2():
+    """Execute mRNA Step 2: Primer Design"""
+    try:
+        data = request.json
+        step1_json_path = data.get("step1_json_path")
+        step1_json_data = data.get("step1_json_data")
+        strategy = data.get("strategy", "dominant_isoform")
+        
+        # Either step1_json_path or step1_json_data must be provided
+        if not step1_json_path and not step1_json_data:
+            return jsonify({"error": "step1_json_path or step1_json_data is required"}), 400
+        
+        # Import Step 2 primer design module
+        from exo_gpt.step2_primer_design import design_primers_batch
+        
+        # If JSON data is provided directly, use it
+        if step1_json_data:
+            biomarkers = step1_json_data.get("ev_mrna_biomarkers", [])
+        else:
+            # Load from file
+            if step1_json_path.startswith('./'):
+                step1_json_path = step1_json_path[2:]
+            if not os.path.isabs(step1_json_path):
+                step1_json_path = os.path.join(PROJECT_ROOT, step1_json_path)
+            step1_json_path = os.path.normpath(step1_json_path)
+            
+            if not os.path.exists(step1_json_path):
+                return jsonify({"error": f"Step 1 JSON file not found: {step1_json_path}"}), 400
+            
+            with open(step1_json_path, "r") as f:
+                step1_data = json.load(f)
+            biomarkers = step1_data.get("ev_mrna_biomarkers", [])
+        
+        if not biomarkers:
+            return jsonify({"error": "No biomarkers found in Step 1 data"}), 400
+        
+        # Design primers
+        results = design_primers_batch(biomarkers, strategy=strategy)
+        
+        # Prepare output
+        output = {
+            "disease": step1_json_data.get("disease") if step1_json_data else step1_data.get("disease"),
+            "biofluid": step1_json_data.get("biofluid") if step1_json_data else step1_data.get("biofluid"),
+            "primer_designs": results,
+            "strategy": strategy
+        }
+        
+        # Save results
+        scores_dir = os.path.join(PROJECT_ROOT, "scores")
+        os.makedirs(scores_dir, exist_ok=True)
+        
+        safe_disease = output["disease"].lower().replace(" ", "_").replace("/", "_") if output["disease"] else "unknown"
+        safe_biofluid = output["biofluid"].lower().replace(" ", "_") if output["biofluid"] else "plasma"
+        json_filename = f"mrna_{safe_disease}_{safe_biofluid}_primers.json"
+        json_path = os.path.join(scores_dir, json_filename)
+        
+        try:
+            with open(json_path, "w") as f:
+                json.dump(output, f, indent=2)
+        except Exception as e:
+            print(f"Warning: Could not save primer designs to {json_path}: {e}")
+        
+        return jsonify({
+            "success": True,
+            "result": output,
+            "saved_json_path": json_path if os.path.exists(json_path) else None
         })
         
     except Exception as e:

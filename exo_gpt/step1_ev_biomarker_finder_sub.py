@@ -11,7 +11,6 @@ Prioritizes local files for speed, with optional database download capability.
 """
 
 from __future__ import annotations
-
 import argparse
 import json
 import os
@@ -21,7 +20,8 @@ from typing import List, Dict, Any, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-DATA_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data"))
+# Protein data directory
+DATA_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data", "protein"))
 
 
 @dataclass

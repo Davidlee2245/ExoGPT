@@ -1,9 +1,0 @@
-gene_symbol,uniprot,structure_type,model_path,pdb_id,domain,domain_residues,notes
-CD274,Q9NZQ7,pdb,./structures/pd_l1_ecd.pdb,5JDR,ectodomain,19-238,"PD-L1 ectodomain structure, high resolution"
-PDCD1,Q15116,pdb,./structures/pd1_ecd.pdb,3RRQ,ectodomain,25-150,PD-1 ectodomain
-CD63,P08962,alphafold,./structures/cd63_alphafold.pdb,,full_length,1-238,AlphaFold model for CD63 tetraspanin
-CD81,P60033,alphafold,./structures/cd81_alphafold.pdb,,full_length,1-236,AlphaFold model for CD81 tetraspanin
-CD9,P21926,alphafold,./structures/cd9_alphafold.pdb,,full_length,1-228,AlphaFold model for CD9 tetraspanin
-CD44,P16070,pdb,./structures/cd44_ecd.pdb,2JCQ,ectodomain,21-270,CD44 ectodomain structure
-CTLA4,P16410,pdb,./structures/ctla4_ecd.pdb,1I8L,ectodomain,37-161,CTLA-4 ectodomain
-

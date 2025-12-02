@@ -40,7 +40,7 @@ def _load_uniprot_alias_map() -> Dict[str, str]:
 
     try:
         project_root = Path(__file__).resolve().parent.parent
-        uniprot_path = project_root / "data" / "uniprot" / "uniprot.tsv"
+        uniprot_path = project_root / "data" / "protein" / "uniprot" / "uniprot.tsv"
         if not uniprot_path.exists():
             _UNIPROT_ALIAS_MAP = {}
             return _UNIPROT_ALIAS_MAP

@@ -65,6 +65,17 @@ scores/*.json
 scores/*.md
 !scores/.gitkeep
 
+# Large database files (too large for GitHub - >50MB)
+data/mRNA/hpa_raw/normal_tissue.tsv
+data/mRNA/databases/TCGA/tcga_PAAD_pancreatic_cancer.csv
+data/protein/hpa_raw/normal_tissue.tsv
+data/protein/hpa_raw/pathology.tsv
+data/mRNA/hpa_raw/pathology.tsv
+# Exclude large TCGA database files
+data/**/TCGA/*.csv
+# Exclude large HPA raw data files
+data/**/hpa_raw/*.tsv
+
 # Temporary files
 *.tmp
 *.temp

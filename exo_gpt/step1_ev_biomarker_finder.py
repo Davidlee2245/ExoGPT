@@ -30,7 +30,8 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
-DATA_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data"))
+# Protein data directory
+DATA_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data", "protein"))
 
 # Minimal heuristic threshold for considering an extracellular domain
 # "long enough" to be an EV surface marker candidate.
@@ -163,9 +164,12 @@ def _load_hpa_bulk_pathology(hpa_dir: str, disease_tissue: str, normal_tissue: s
         possible_paths.append(bulk_path_raw)
     
     # Absolute path fallback (for different workspace locations)
+    # Use protein subdirectory
+    base_data_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data"))
     fallback_paths = [
-        "/home/david/.cursor-tutor/ExoGPT/data/hpa_raw/pathology.tsv",
-        os.path.expanduser("~/.cursor-tutor/ExoGPT/data/hpa_raw/pathology.tsv"),
+        os.path.join(base_data_dir, "protein", "hpa_raw", "pathology.tsv"),
+        "/home/david/.cursor-tutor/ExoGPT/data/protein/hpa_raw/pathology.tsv",
+        os.path.expanduser("~/.cursor-tutor/ExoGPT/data/protein/hpa_raw/pathology.tsv"),
     ]
     possible_paths.extend(fallback_paths)
     

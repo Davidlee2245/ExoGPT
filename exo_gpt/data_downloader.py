@@ -32,8 +32,10 @@ except ImportError:
     # Note: Web scraping features will be disabled without these libraries
     # The downloader will fall back to sample data generation
 
-DATA_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data"))
-CACHE_DIR = os.path.join(DATA_DIR, ".cache")
+# Base data directory - will be set to protein or mRNA subdirectory
+BASE_DATA_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data"))
+DATA_DIR = os.path.join(BASE_DATA_DIR, "protein")  # Default to protein for backward compatibility
+CACHE_DIR = os.path.join(BASE_DATA_DIR, ".cache")
 
 
 class DataDownloader:
@@ -58,7 +60,14 @@ class DataDownloader:
         },
     }
     
-    def __init__(self, progress_callback: Optional[Callable[[str, float], None]] = None):
+    def __init__(self, progress_callback: Optional[Callable[[str, float], None]] = None, data_type: str = "protein"):
+        """
+        Initialize DataDownloader.
+        
+        Args:
+            progress_callback: Optional callback for progress updates
+            data_type: "protein" or "mRNA" to use appropriate data directory
+        """
         self.progress_callback = progress_callback or (lambda msg, pct: None)
         self.downloaded_files = []
         self.session = None
@@ -67,6 +76,12 @@ class DataDownloader:
             self.session.headers.update({
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             })
+        
+        # Set data directory based on type
+        if data_type.lower() == "mrna":
+            self.data_dir = os.path.join(BASE_DATA_DIR, "mRNA")
+        else:
+            self.data_dir = os.path.join(BASE_DATA_DIR, "protein")
         
         # Create cache directory
         os.makedirs(CACHE_DIR, exist_ok=True)
@@ -251,7 +266,7 @@ class DataDownloader:
         """Check if local data exists for disease/biofluid"""
         from exo_gpt.step1_ev_biomarker_finder import _load_ev_tables
         
-        tables = _load_ev_tables(DATA_DIR, search_subdirs=True)
+        tables = _load_ev_tables(self.data_dir, search_subdirs=True)
         if not tables:
             return False
         
@@ -294,7 +309,7 @@ class DataDownloader:
         disease_safe = disease.lower().replace(" ", "_")
         biofluid_safe = biofluid.lower()
         filename = f"vesiclepedia_{disease_safe}_{biofluid_safe}.csv"
-        filepath = os.path.join(DATA_DIR, "databases", filename)
+        filepath = os.path.join(self.data_dir, "databases", filename)
         os.makedirs(os.path.dirname(filepath), exist_ok=True)
         
         df = df.fillna("")
@@ -440,7 +455,7 @@ class DataDownloader:
         disease_safe = disease.lower().replace(" ", "_")
         biofluid_safe = biofluid.lower()
         filename = f"exocarta_{disease_safe}_{biofluid_safe}.csv"
-        filepath = os.path.join(DATA_DIR, "databases", filename)
+        filepath = os.path.join(self.data_dir, "databases", filename)
         os.makedirs(os.path.dirname(filepath), exist_ok=True)
         
         df = df.fillna("")
@@ -526,7 +541,7 @@ class DataDownloader:
         disease_safe = disease.lower().replace(" ", "_")
         biofluid_safe = biofluid.lower()
         filename = f"evpedia_{disease_safe}_{biofluid_safe}.csv"
-        filepath = os.path.join(DATA_DIR, "databases", filename)
+        filepath = os.path.join(self.data_dir, "databases", filename)
         os.makedirs(os.path.dirname(filepath), exist_ok=True)
         
         df = df.fillna("")
@@ -676,15 +691,22 @@ class DataDownloader:
 def download_data_if_needed(
     disease: str,
     biofluid: str,
-    progress_callback: Optional[Callable[[str, float], None]] = None
+    progress_callback: Optional[Callable[[str, float], None]] = None,
+    data_type: str = "protein"
 ) -> tuple:
     """
     Check if data exists locally, download if needed.
     
+    Args:
+        disease: Disease name
+        biofluid: Biofluid type
+        progress_callback: Optional progress callback
+        data_type: "protein" or "mRNA" to use appropriate data directory
+    
     Returns:
         (data_exists, downloaded_files)
     """
-    downloader = DataDownloader(progress_callback)
+    downloader = DataDownloader(progress_callback, data_type=data_type)
     
     # Check if local data exists
     if downloader.check_local_data(disease, biofluid):

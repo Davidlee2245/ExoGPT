@@ -272,7 +272,7 @@ export const Step3Panel: React.FC = () => {
   return (
     <section className="panel">
       <header className="panel-header">
-        <h2>Step 3 · Nanobinder Design Orchestrator</h2>
+        <h2>Step 3-2 · Nanobinder Design Orchestrator</h2>
         <p>
           Orchestrates RFdiffusion backbone generation, ProteinMPNN sequence design, and AlphaFold-Multimer (ColabFold) 
           structure prediction. Generates reusable scripts and configs for execution on external machines/HPC.
